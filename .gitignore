@@ -48,3 +48,6 @@ src/bin/debug/
  
 # Ignore experiments directory
 experiments/
+
+# Ignore dataset directory
+dataset/

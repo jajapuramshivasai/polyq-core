@@ -1,9 +1,5 @@
 use fixedbitset::FixedBitSet;
 use num_complex::Complex64;
-use std::{
-    collections::{HashMap, HashSet},
-    process::Output,
-};
 
 // the small QASM helper module lives at crate root; we re-export it here
 // so that consumers of `sim` can still access `sim::Circuit` etc.
@@ -151,21 +147,32 @@ pub fn compile_clifford_t(num_qubits: usize, gates: &[Gate]) -> CompiledPhasePol
 
 /// Evaluates the non-Clifford (remainder) phase terms for a specific variable assignment.
 /// Computes the sum of weights modulo 8.
-fn eval_rem_mod8(rem: &[Z8Term], x: &[u8]) -> u8 {
+#[inline(always)]
+fn eval_rem_mod8(rem: &[Z8Term], mask: usize, vvars: &[usize], x_full: &[u8]) -> u8 {
     let mut acc = 0u8;
+
     for t in rem {
-        let mut v = 1u8;
-        // The term is only active if all variables in it are 1.
-        for &idx in &t.vars {
-            v &= x[idx];
-            if v == 0 {
+        let mut active = true;
+
+        for &var in &t.vars {
+            // determine the value of this variable: if it's a vvar use the mask,
+            // otherwise look at the full assignment (covers fixed or uvars).
+            let val = if let Some(p) = vvars.iter().position(|&x| x == var) {
+                ((mask >> p) & 1) as u8
+            } else {
+                x_full[var]
+            };
+            if val == 0 {
+                active = false;
                 break;
             }
         }
-        if v == 1 {
-            acc = (acc + (t.weight % 8)) % 8;
+
+        if active {
+            acc = (acc + t.weight) & 7;
         }
     }
+
     acc
 }
 
@@ -246,17 +253,7 @@ fn z2_quadratic_exponential_sum(b: Vec<FixedBitSet>, v: Vec<u8>, eps: u8) -> f64
     if eps == 1 { -mag } else { mag }
 }
 
-/// Helper function to enforce input/output variable constraints without conflicts.
-/// Returns false if there is a logical contradiction (e.g., forcing a variable to be both 0 and 1).
-fn insert_fixed_checked(fixed: &mut HashMap<usize, u8>, idx: usize, val: u8) -> bool {
-    match fixed.get(&idx) {
-        None => {
-            fixed.insert(idx, val & 1);
-            true
-        }
-        Some(&old) => old == (val & 1),
-    }
-}
+// previous helper removed: optimized amplitude implementation no longer needs a hashmap-based fixed set.
 
 /// Calculates the transition amplitude <y | U | input> for the compiled circuit.
 /// This function partitions variables into Clifford and non-Clifford sets to accelerate computation.
@@ -267,82 +264,91 @@ pub fn amplitude_clifford_t_accel(
 ) -> Complex64 {
     let n = poly.num_qubits;
     let t = poly.num_vars;
-    assert_eq!(input.len(), n);
 
-    let mut fixed: HashMap<usize, u8> = HashMap::new();
+    let mut fixed = vec![None; t];
 
-    // 1. Apply boundary conditions: Fix input variables (0..n-1)
     for i in 0..n {
-        if !insert_fixed_checked(&mut fixed, i, input[i]) {
-            return Complex64::new(0.0, 0.0);
-        }
+        fixed[i] = Some(input[i]);
     }
 
-    // 2. Apply boundary conditions: Fix output variables.
-    // If output_vars[i] == i (no Hadamard on wire), this checks for input/output state conflicts.
     for i in 0..n {
         let ov = poly.output_vars[i];
         let bit = ((target_y >> i) & 1) as u8;
-        if !insert_fixed_checked(&mut fixed, ov, bit) {
-            return Complex64::new(0.0, 0.0);
+
+        match fixed[ov] {
+            None => fixed[ov] = Some(bit),
+            Some(v) if v != bit => return Complex64::new(0.0, 0.0),
+            _ => {}
         }
     }
 
-    // 3. Isolate internal variables involved in non-Clifford (T/S) terms.
-    let mut vset: HashSet<usize> = HashSet::new();
+    let mut in_rem = vec![false; t];
+
     for term in &poly.rem {
-        for &idx in &term.vars {
-            if !fixed.contains_key(&idx) {
-                vset.insert(idx);
-            }
+        for &v in &term.vars {
+            in_rem[v] = true;
         }
     }
 
-    let internal: Vec<usize> = (0..t).filter(|i| !fixed.contains_key(i)).collect();
+    let mut internal = Vec::new();
+    for i in 0..t {
+        if fixed[i].is_none() {
+            internal.push(i);
+        }
+    }
 
-    // vvars: Variables involved in remainder (T/S) gates. We must iterate over these exponentially.
-    let vvars: Vec<usize> = internal
-        .iter()
-        .cloned()
-        .filter(|i| vset.contains(i))
-        .collect();
-    // uvars: Pure Clifford variables. These will be evaluated in polynomial time via Dickson's theorem.
-    let uvars: Vec<usize> = internal
-        .iter()
-        .cloned()
-        .filter(|i| !vset.contains(i))
-        .collect();
+    let mut vvars = Vec::new();
+    let mut uvars = Vec::new();
+
+    for &v in &internal {
+        if in_rem[v] {
+            vvars.push(v);
+        } else {
+            uvars.push(v);
+        }
+    }
 
     let nv = vvars.len();
     let nu = uvars.len();
 
     let mut x_full = vec![0u8; t];
-    for (&k, &val) in fixed.iter() {
-        x_full[k] = val;
-    }
 
-    // Pre-calculate the constant phase contribution from fixed variables.
-    let mut eps_base = poly.eps4 & 1;
-
-    for (&idx, &val) in fixed.iter() {
-        if val == 1 && (poly.v4[idx] & 1) == 1 {
-            eps_base ^= 1;
+    for i in 0..t {
+        if let Some(v) = fixed[i] {
+            x_full[i] = v;
         }
     }
-    let fixed_keys: Vec<usize> = fixed.keys().cloned().collect();
-    for a in 0..fixed_keys.len() {
-        for b in (a + 1)..fixed_keys.len() {
-            let i = fixed_keys[a];
-            let j = fixed_keys[b];
-            if fixed[&i] == 1 && fixed[&j] == 1 && poly.b4[i].contains(j) {
+
+    let mut eps_base = poly.eps4 & 1;
+
+    for i in 0..t {
+        if let Some(v) = fixed[i] {
+            if v == 1 && (poly.v4[i] & 1) == 1 {
                 eps_base ^= 1;
             }
         }
     }
 
-    // Build the sub-matrix (bu) and sub-vector (vu_base) for the Clifford variables (uvars).
-    let mut bu: Vec<FixedBitSet> = (0..nu).map(|_| FixedBitSet::with_capacity(nu)).collect();
-    let mut vu_base: Vec<u8> = vec![0u8; nu];
+    // include quadratic contributions from pairs of fixed variables
+    let fixed_list: Vec<usize> = fixed
+        .iter()
+        .enumerate()
+        .filter_map(|(idx, &v)| if v == Some(1) { Some(idx) } else { None })
+        .collect();
+    for a in 0..fixed_list.len() {
+        for b in (a + 1)..fixed_list.len() {
+            let i = fixed_list[a];
+            let j = fixed_list[b];
+            if poly.b4[i].contains(j) {
+                eps_base ^= 1;
+            }
+        }
+    }
+
+    let mut bu: Vec<FixedBitSet> =
+        (0..nu).map(|_| FixedBitSet::with_capacity(nu)).collect();
+
+    let mut vu_base = vec![0u8; nu];
 
     for (ui, &orig_u) in uvars.iter().enumerate() {
         vu_base[ui] = poly.v4[orig_u] & 1;
@@ -355,65 +361,76 @@ pub fn amplitude_clifford_t_accel(
                 bu[uj].insert(ui);
             }
         }
-        // Fold fixed-variable interactions into the linear terms of uvars.
-        for (&fidx, &fval) in fixed.iter() {
-            if fval == 1 && poly.b4[orig_u].contains(fidx) {
-                vu_base[ui] ^= 1;
+
+        for f in 0..t {
+            if let Some(val) = fixed[f] {
+                if val == 1 && poly.b4[orig_u].contains(f) {
+                    vu_base[ui] ^= 1;
+                }
             }
         }
     }
 
-    // Pre-calculate cross-terms between uvars (Clifford) and vvars (non-Clifford).
     let mut cross: Vec<Vec<usize>> = vec![Vec::new(); nu];
+
     for (ui, &orig_u) in uvars.iter().enumerate() {
-        for (vj_pos, &orig_v) in vvars.iter().enumerate() {
+        for (vj, &orig_v) in vvars.iter().enumerate() {
             if poly.b4[orig_u].contains(orig_v) {
-                cross[ui].push(vj_pos);
+                cross[ui].push(vj);
             }
         }
     }
 
-    let mut amp = Complex64::new(0.0, 0.0);
     let total_v = 1usize << nv;
 
-    // Iterate over all possible 2^nv assignments of the non-Clifford variables (vvars).
+    let mut amp = Complex64::new(0.0, 0.0);
+
+    let mut vu = vec![0u8; nu];
+
     for mask in 0..total_v {
         for (j, &orig_v) in vvars.iter().enumerate() {
             x_full[orig_v] = ((mask >> j) & 1) as u8;
         }
 
-        // 1. Evaluate phase contribution from T and S gates.
-        let r = eval_rem_mod8(&poly.rem, &x_full);
+        let r = eval_rem_mod8(&poly.rem, mask, &vvars, &x_full);
+
         let theta = std::f64::consts::PI * (r as f64) / 4.0;
+
         let phase = Complex64::from_polar(1.0, theta);
 
-        // 2. Adjust the linear vector (vu) for the Clifford solver based on the current vvar mask.
-        let mut vu = vu_base.clone();
+        vu.copy_from_slice(&vu_base);
+
         for ui in 0..nu {
             let mut togg = 0u8;
-            for &vj_pos in &cross[ui] {
-                togg ^= ((mask >> vj_pos) & 1) as u8;
+
+            for &vj in &cross[ui] {
+                togg ^= ((mask >> vj) & 1) as u8;
             }
+
             vu[ui] ^= togg;
         }
 
+        // compute eps including contributions from mask bits and fixed interactions
         let mut eps = eps_base;
-
-        // Add phase contributions from vvars and their interactions.
+        // contributions from vvars linear terms
         for (j, &orig_v) in vvars.iter().enumerate() {
             if ((mask >> j) & 1) == 1 && (poly.v4[orig_v] & 1) == 1 {
                 eps ^= 1;
             }
         }
-        for (&fidx, &fval) in fixed.iter() {
-            if fval == 1 {
-                for (j, &orig_v) in vvars.iter().enumerate() {
-                    if ((mask >> j) & 1) == 1 && poly.b4[fidx].contains(orig_v) {
-                        eps ^= 1;
+        // fixed-vvar quadratic interactions
+        for i in 0..t {
+            if let Some(fval) = fixed[i] {
+                if fval == 1 {
+                    for (j, &orig_v) in vvars.iter().enumerate() {
+                        if ((mask >> j) & 1) == 1 && poly.b4[i].contains(orig_v) {
+                            eps ^= 1;
+                        }
                     }
                 }
             }
         }
+        // vvar-vvar quadratic interactions
         for a in 0..nv {
             if ((mask >> a) & 1) == 0 {
                 continue;
@@ -428,15 +445,13 @@ pub fn amplitude_clifford_t_accel(
             }
         }
 
-        // 3. Solve the Clifford exponential sum in polynomial time.
-        let inner = z2_quadratic_exponential_sum(bu.clone(), vu, eps);
+        let inner = z2_quadratic_exponential_sum(bu.clone(), vu.clone(), eps);
 
-        // 4. Accumulate into the total amplitude.
         amp += phase * inner;
     }
 
-    // Normalize the final amplitude (from the 1/sqrt(2) factors of the Hadamard gates).
     let norm = (2f64).powf(-(poly.num_h as f64) / 2.0);
+
     amp * norm
 }
 
@@ -566,7 +581,7 @@ End
 
 #[cfg(test)]
 mod tests {
-    use rayon::vec;
+    // rayon::vec import removed; not used in tests
 
     use super::*;
 

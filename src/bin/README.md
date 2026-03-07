@@ -7,22 +7,22 @@ cargo bench
 
 # current state
 
-## run 2
- - rust QASM simulation time: 121.274100167s
+## run 3
+ - rust QASM simulation time: 6.91563375s
  
  {
-  "simulation_time_seconds": 5.966247797012329,
+  "simulation_time_seconds": 7.423377990722656,
   "system_info": {
     "platform": "Darwin 25.2.0",
     "architecture": "arm64",
     "processor": "arm",
     "cpu_count": 8,
     "total_ram_gb": 8.0,
-    "available_ram_gb": 1.25,
+    "available_ram_gb": 1.31,
     "cpu_brand": "Apple M1",
     "cpu_hz": "N/A"
   },
-  "date_time": "2026-03-07T22:55:18.059837"
+  "date_time": "2026-03-08T00:02:13.099149"
 }
 
 

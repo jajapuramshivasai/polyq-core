@@ -1,15 +1,17 @@
-# to profile code run
-cargo flamegraph --bench sim_bench
-### view target/flamegraph.svg
-# to run benchmarks run
-cargo bench
-### view target/criterion/report/index.html
+## to profile code run
+
+cargo flamegraph --release --bin benchmark
+
+## view 
+
+flamegraph.svg
+
 
 # current state
 
 ## run 3
- - rust QASM simulation time: 6.91563375s
- 
+ - polyq simulation time: 6.91563375s
+ - qiskit aer simulation time : 7.423377990722656s
  {
   "simulation_time_seconds": 7.423377990722656,
   "system_info": {

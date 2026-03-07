@@ -7,10 +7,11 @@ cargo bench
 
 # current state
 
-## run 1 {7-3-26|22:40}
- - rust QASM simulation time: 132.758043084s
- - qiskit aer {
-  "simulation_time_seconds": 13.671631097793579,
+## run 2
+ - rust QASM simulation time: 121.274100167s
+ 
+ {
+  "simulation_time_seconds": 5.966247797012329,
   "system_info": {
     "platform": "Darwin 25.2.0",
     "architecture": "arm64",
@@ -20,6 +21,8 @@ cargo bench
     "available_ram_gb": 1.25,
     "cpu_brand": "Apple M1",
     "cpu_hz": "N/A"
-  }
+  },
+  "date_time": "2026-03-07T22:55:18.059837"
 }
+
 

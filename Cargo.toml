@@ -9,12 +9,8 @@ num-complex = "0.4"
 rayon = "1.8"
 flamegraph = "0.6.11"
 
-# bench configuration removed to avoid manifest errors
-# [[bench]]
-# name = "unified_sim_bench"
-# harness = false
-
-# [profile.bench]
-# debug = true      # Required for profiling
-# opt-level = 3     # Ensure maximum optimization
-# lto = true        # Recommended for library performance
+[profile.release]
+opt-level = 3
+lto = true
+debug = 1        # or 2; 1 is usually enough for function names
+codegen-units = 1 # optional, often improves perf consistency

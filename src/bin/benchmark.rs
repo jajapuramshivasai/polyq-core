@@ -114,6 +114,9 @@ fn simulate_qasm_statevector(qasm_path: &str) {
 }
 
 fn main() {
-    // benchmark_bv(5);
+    // cargo run -p benchmark --release
+    //cargo build --release --bin benchmark 
+    // cargo flamegraph --release --bin benchmark
+
     simulate_qasm_statevector("dataset/random_circuit_q27_h10_t5_s10_z25_cz10/random_circuit_q27_h10_t5_s10_z25_cz10.qasm");
 }

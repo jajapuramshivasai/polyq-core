@@ -1,8 +1,15 @@
 use PolyQ::sim::{Circuit, simulate_statevector};
+use PolyQ::qc::read_qasm_file;
 use std::time::Instant;
+use std::fs::File;
+use std::io::Read;
+use std::path::Path;
 
-/// Build a Bernstein–Vazirani circuit for a secret bitstring.
+
+//clifford circuits
 fn build_bv(n: usize, secret: &[u8]) -> Circuit {
+
+// Build a Bernstein–Vazirani circuit for a secret bitstring.
     let mut circ = Circuit::new(n);
 
     // initial Hadamards
@@ -25,69 +32,88 @@ fn build_bv(n: usize, secret: &[u8]) -> Circuit {
     circ
 }
 
-fn main() {
-    let args: Vec<String> = std::env::args().collect();
 
-    if args.get(1).map(|s| s == "csv").unwrap_or(false) {
-        // open file in project root
-        use std::fs::File;
-        use std::io::Write;
-        let mut file = File::create("bv_times.csv").expect("failed to create output file");
-        writeln!(file, "qubits,state_secs,amp_secs,amp_re,amp_im,amp_norm").unwrap();
-        for n in 4..=15 {
-            let secret: Vec<u8> = (0..n).map(|i| if i % 2 == 0 { 1 } else { 0 }).collect();
-            let circ = build_bv(n, &secret);
-            let poly = circ.compile();
-            let input = vec![0u8; n];
-            // time full statevector
-            let start_state = Instant::now();
-            let state = simulate_statevector(&poly, &input);
-            let elapsed_state = start_state.elapsed();
-            let state_secs = elapsed_state.as_secs_f64();
-            // compute expected index
-            let expected = secret
-                .iter()
-                .enumerate()
-                .fold(0usize, |acc, (i, &b)| acc | ((b as usize) << i));
-            // time amplitude routine
-            let start_amp = Instant::now();
-            let amp = PolyQ::sim::amplitude_clifford_t_accel(&poly, &input, expected);
-            let elapsed_amp = start_amp.elapsed();
-            let amp_secs = elapsed_amp.as_secs_f64();
-            let norm = amp.norm();
-            writeln!(file, "{},{},{},{},{},{}", n, state_secs, amp_secs, amp.re, amp.im, norm).unwrap();
+//non‑clifford circuits
+fn build_qft(n: usize) -> Circuit {
+    let mut circ = Circuit::new(n);
+    // Apply Hadamard to all qubits
+    for i in 0..n {
+        circ.h(i);
+        for j in (i + 1)..n {
+            let k = j - i + 1;
+            // Approximate controlled phase exp(i*pi/2^k) using Clifford+T gates
+            if k == 1 {
+                circ.cz(j, i); // CX as CZ for Clifford simulator
+                circ.s(i);
+                circ.cz(j, i);
+            } else if k == 2 {
+                circ.cz(j, i);
+                circ.t(i);
+                circ.cz(j, i);
+            } else {
+                circ.cz(j, i);
+                for _ in 0..(1 << (k - 2)) {
+                    circ.t(i);
+                }
+                circ.cz(j, i);
+            }
         }
-        println!("wrote bv_times.csv to project root");
-        return;
     }
+    // Swap qubits
+    for i in 0..(n / 2) {
+        let a = i;
+        let b = n - i - 1;
+        circ.cz(a, b); // No native swap, use CZ as placeholder
+        circ.cz(b, a);
+        circ.cz(a, b);
+    }
+    circ
+}
 
-    let n: usize = args
-        .get(1)
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(20);
-
+fn benchmark_bv(n: usize) {
     // predetermined secret: alternating 1,0 pattern
     let secret: Vec<u8> = (0..n).map(|i| if i % 2 == 0 { 1 } else { 0 }).collect();
-
     println!("BV benchmark ({} qubits)", n);
     println!("secret = {:?}", secret);
-
     let circ = build_bv(n, &secret);
     let poly = circ.compile();
     let input = vec![0u8; n];
-
     let start = Instant::now();
     let state = simulate_statevector(&poly, &input);
     let elapsed = start.elapsed();
-
-    // compute little‑endian index of secret
     let expected = secret
         .iter()
         .enumerate()
         .fold(0usize, |acc, (i, &b)| acc | ((b as usize) << i));
-
     println!("simulation time: {:?}", elapsed);
     println!("amplitude at expected index {} = {:?}", expected, state[expected]);
     let norm_sq: f64 = state.iter().map(|c| c.norm_sqr()).sum();
     println!("state norm squared = {}", norm_sq);
+}
+
+fn simulate_qasm_statevector(qasm_path: &str) {
+    println!("\nSimulating QASM file: {}", qasm_path);
+    // Use PolyQ's QASM parser
+    let circ = match read_qasm_file(qasm_path) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("Failed to parse QASM: {:?}", e);
+            return;
+        }
+    };
+    let n = circ.num_qubits;
+    let poly = circ.compile();
+    let input = vec![0u8; n];
+    let start = Instant::now();
+    let state = simulate_statevector(&poly, &input);
+    let elapsed = start.elapsed();
+    println!("QASM simulation time: {:?}", elapsed);
+    // Print norm squared for sanity
+    let norm_sq: f64 = state.iter().map(|c| c.norm_sqr()).sum();
+    println!("state norm squared = {}", norm_sq);
+}
+
+fn main() {
+    // benchmark_bv(5);
+    simulate_qasm_statevector("dataset/random_circuit_q27_h10_t5_s10_z25_cz10/random_circuit_q27_h10_t5_s10_z25_cz10.qasm");
 }

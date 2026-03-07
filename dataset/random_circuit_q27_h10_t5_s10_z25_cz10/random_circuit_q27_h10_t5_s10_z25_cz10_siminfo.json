@@ -1,15 +1,4 @@
-# to profile code run
-cargo flamegraph --bench sim_bench
-### view target/flamegraph.svg
-# to run benchmarks run
-cargo bench
-### view target/criterion/report/index.html
-
-# current state
-
-## run 1 {7-3-26|22:40}
- - rust QASM simulation time: 132.758043084s
- - qiskit aer {
+{
   "simulation_time_seconds": 13.671631097793579,
   "system_info": {
     "platform": "Darwin 25.2.0",
@@ -22,4 +11,3 @@ cargo bench
     "cpu_hz": "N/A"
   }
 }
-

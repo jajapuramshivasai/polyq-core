@@ -1,0 +1,20 @@
+[package]
+name = "PolyQ"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+fixedbitset = "0.4"
+num-complex = "0.4"
+rayon = "1.8"
+flamegraph = "0.6.11"
+
+# bench configuration removed to avoid manifest errors
+# [[bench]]
+# name = "unified_sim_bench"
+# harness = false
+
+# [profile.bench]
+# debug = true      # Required for profiling
+# opt-level = 3     # Ensure maximum optimization
+# lto = true        # Recommended for library performance

@@ -1,3 +1,4 @@
+use PolyQ::amplitude_clifford_t_accel;
 use PolyQ::sim::{self, Circuit, simulate_statevector};
 use PolyQ::qc::read_qasm_file;
 use std::time::Instant;
@@ -91,6 +92,31 @@ fn benchmark_bv(n: usize) {
     println!("state norm squared = {}", norm_sq);
 }
 
+
+fn simulate_qasm_amplitude(qasm_path: &str) {
+    //benchmark clifford+t amplitude simulation for a single amplitude
+    println!("\nSimulating amplitude for QASM file: {}", qasm_path);
+    // Use PolyQ's QASM parser
+    let circ = match read_qasm_file(qasm_path) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("Failed to parse QASM: {:?}", e);
+            return;
+        }
+    };
+    let n = circ.num_qubits;
+    let poly = circ.compile();
+    let input = vec![0u8; n];
+    // Choose a target index (e.g., all-zeros)
+    let target_index = 0;
+    let start = Instant::now();
+    let amp = amplitude_clifford_t_accel(&poly, &input, target_index);
+    let elapsed = start.elapsed();
+    println!("Amplitude at index {} = {:?}", target_index, amp);
+    println!("Amplitude simulation time: {:?}", elapsed);
+
+}
+
 fn simulate_qasm_statevector(qasm_path: &str) {
     println!("\nSimulating QASM file: {}", qasm_path);
     // Use PolyQ's QASM parser
@@ -122,5 +148,59 @@ fn main() {
 
     // simulate_qasm_statevector("dataset/random_circuit_q27_h10_t5_s10_z25_cz10/random_circuit_q27_h10_t5_s10_z25_cz10.qasm");
     //dataset/random_circuit_q27_h10_t0_s10_z25_cz10
-    // simulate_qasm_statevector("dataset/random_circuit_q27_h10_t0_s10_z25_cz10/random_circuit_q27_h10_t0_s10_z25_cz10.qasm");
+    simulate_qasm_amplitude("dataset/random_circuit_q27_h10_t0_s10_z25_cz10/random_circuit_q27_h10_t0_s10_z25_cz10.qasm");
+    simulate_qasm_statevector("dataset/random_circuit_q27_h10_t0_s10_z25_cz10/random_circuit_q27_h10_t0_s10_z25_cz10.qasm");
+
+    simulate_qasm_amplitude("experiments/dataset/random_circuit_q27_h10_t70_s10_z25_cz10/random_circuit_q27_h10_t70_s10_z25_cz10.qasm");
+    simulate_qasm_statevector("experiments/dataset/random_circuit_q27_h10_t70_s10_z25_cz10/random_circuit_q27_h10_t70_s10_z25_cz10.qasm");
 }
+
+/*
+
+BV benchmark (18 qubits)
+secret = [1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0]
+simulation time: 655.003416ms
+amplitude at expected index 87381 = Complex { re: 1.0, im: 0.0 }
+state norm squared = 1
+
+Simulating amplitude for QASM file: dataset/random_circuit_q27_h10_t0_s10_z25_cz10/random_circuit_q27_h10_t0_s10_z25_cz10.qasm
+Amplitude at index 0 = Complex { re: 0.125, im: 0.0 }
+Amplitude simulation time: 2.792µs
+
+Simulating QASM file: dataset/random_circuit_q27_h10_t0_s10_z25_cz10/random_circuit_q27_h10_t0_s10_z25_cz10.qasm
+QASM simulation time: 6.537444458s
+state norm squared = 1
+
+Simulating amplitude for QASM file: experiments/dataset/random_circuit_q27_h10_t70_s10_z25_cz10/random_circuit_q27_h10_t70_s10_z25_cz10.qasm
+Amplitude at index 0 = Complex { re: 0.03125, im: 0.0 }
+Amplitude simulation time: 13.125µs
+
+Simulating QASM file: experiments/dataset/random_circuit_q27_h10_t70_s10_z25_cz10/random_circuit_q27_h10_t70_s10_z25_cz10.qasm
+QASM simulation time: 7.208341875s
+state norm squared = 1
+
+
+
+BV benchmark (18 qubits)
+secret = [1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0]
+simulation time: 447.444083ms
+amplitude at expected index 87381 = Complex { re: 1.0, im: 0.0 }
+state norm squared = 1
+
+Simulating amplitude for QASM file: dataset/random_circuit_q27_h10_t0_s10_z25_cz10/random_circuit_q27_h10_t0_s10_z25_cz10.qasm
+Amplitude at index 0 = Complex { re: 0.125, im: 0.0 }
+Amplitude simulation time: 2.584µs
+
+Simulating QASM file: dataset/random_circuit_q27_h10_t0_s10_z25_cz10/random_circuit_q27_h10_t0_s10_z25_cz10.qasm
+QASM simulation time: 5.915788s
+state norm squared = 1
+
+Simulating amplitude for QASM file: experiments/dataset/random_circuit_q27_h10_t70_s10_z25_cz10/random_circuit_q27_h10_t70_s10_z25_cz10.qasm
+Amplitude at index 0 = Complex { re: 0.03125, im: 0.0 }
+Amplitude simulation time: 28.25µs
+
+Simulating QASM file: experiments/dataset/random_circuit_q27_h10_t70_s10_z25_cz10/random_circuit_q27_h10_t70_s10_z25_cz10.qasm
+QASM simulation time: 6.535101875s
+state norm squared = 1
+
+*/

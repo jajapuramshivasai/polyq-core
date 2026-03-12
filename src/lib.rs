@@ -13,8 +13,6 @@ pub use sim::{
     compile_clifford_t,
     amplitude_clifford_t_accel,
     simulate_statevector,
-    simulate_statevector_clifford_t_multiprocess,
-    amplitude_clifford_t_multithreaded,
     Circuit,
     read_qasm_file,
     write_qasm_file,

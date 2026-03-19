@@ -1,9 +1,9 @@
-use crate::{compile_clifford_t, Gate, CompiledPhasePoly};
+use crate::{compile_clifford_t, Gate, Phase, PHASE_BITS, CompiledPhasePoly};
 use std::fs::File;
 use std::io::{self, BufRead, BufReader, Write};
 
 /// A very small error type for the trivial QASM parser we ship with the
-/// library.  Only the `h`, `z`, `s`, `t` and `cz` instructions are
+/// library.  Only the `h`, `z`, `s`, `t`, `rz` and `cz` instructions are
 /// recognised; everything else (including comments) is silently ignored.
 #[derive(Debug)]
 pub enum QasmError {
@@ -17,9 +17,7 @@ impl From<io::Error> for QasmError {
     }
 }
 
-/// Convenient in‑memory representation of a circuit.  For backwards
-/// compatibility we keep the public fields, but users should generally
-/// manipulate a circuit through the builder methods below.
+/// Convenient in‑memory representation of a circuit.
 #[derive(Clone, Debug, Default)]
 pub struct Circuit {
     pub num_qubits: usize,
@@ -32,8 +30,6 @@ impl Circuit {
         Self { num_qubits, gates: Vec::new() }
     }
 
-    /// Import an existing gate list (useful when you're parsing QASM
-    /// yourself or loading a saved `Vec<Gate>`).
     pub fn from_gates(num_qubits: usize, gates: Vec<Gate>) -> Self {
         Self { num_qubits, gates }
     }
@@ -55,16 +51,17 @@ impl Circuit {
         self.num_qubits = self.num_qubits.max(q + 1);
         self.gates.push(Gate::T(q));
     }
+    /// Fixed-precision dyadic RZ: `phase` is in units of π/2^PHASE_BITS.
+    pub fn rz(&mut self, q: usize, phase: Phase) {
+        self.num_qubits = self.num_qubits.max(q + 1);
+        self.gates.push(Gate::RZ(q, phase));
+    }
     pub fn cz(&mut self, a: usize, b: usize) {
-        self.num_qubits = self
-            .num_qubits
-            .max(a + 1)
-            .max(b + 1);
+        self.num_qubits = self.num_qubits.max(a + 1).max(b + 1);
         self.gates.push(Gate::CZ(a, b));
     }
 
-    /// Compile this circuit into the usual phase‑polynomial form used by the
-    /// simulator.
+    /// Compile this circuit into the usual phase‑polynomial form used by the simulator.
     pub fn compile(&self) -> CompiledPhasePoly {
         compile_clifford_t(self.num_qubits, &self.gates)
     }
@@ -73,7 +70,6 @@ impl Circuit {
 // QASM <-> Circuit conversions ----------------------------------------
 
 fn parse_qubit(token: &str) -> Result<usize, QasmError> {
-    // expect something like `q[3]` or `q[0]`;
     if let Some(start) = token.find('[') {
         if let Some(end) = token.find(']') {
             let num = &token[start + 1..end];
@@ -85,10 +81,43 @@ fn parse_qubit(token: &str) -> Result<usize, QasmError> {
     Err(QasmError::Parse(format!("bad qubit token `{}`", token)))
 }
 
-/// Read a text file containing a (rather restricted) OpenQASM circuit and
-/// return the corresponding [`Circuit`].  The file is read line by line and
-/// unrecognised statements are ignored, so you can safely pass a complete
-/// QASM program with headers and comments if you like.
+/// Parse an RZ argument in a speed-focused, dyadic-friendly way.
+///
+/// Supported syntaxes:
+/// - `rz k q[0];`            where k is an integer in [0,2^PHASE_BITS)
+/// - `rz k/2^PHASE_BITS q[0];`  (we accept `2^16` literally)
+///
+/// We interpret the argument as `phase` in units of π/2^PHASE_BITS.
+/// So `rz 16384 q[0];` is π/4 when PHASE_BITS=16.
+fn parse_rz_phase(token: &str) -> Result<Phase, QasmError> {
+    let tok = token.trim();
+
+    // form: "k"
+    if let Ok(v) = tok.parse::<u32>() {
+        return Ok((v & ((1u32 << PHASE_BITS) - 1)) as Phase);
+    }
+
+    // form: "k/2^16"
+    if let Some((num, den)) = tok.split_once('/') {
+        let num_v: u32 = num.trim().parse().map_err(|e| QasmError::Parse(format!("bad rz numerator: {}", e)))?;
+        let den = den.trim();
+        if den.starts_with("2^") {
+            let pow_str = &den[2..];
+            let pow: u32 = pow_str.parse().map_err(|e| QasmError::Parse(format!("bad rz denominator power: {}", e)))?;
+            if pow != PHASE_BITS {
+                return Err(QasmError::Parse(format!(
+                    "rz denominator must be 2^{} for this build (got 2^{})",
+                    PHASE_BITS, pow
+                )));
+            }
+            return Ok((num_v & ((1u32 << PHASE_BITS) - 1)) as Phase);
+        }
+    }
+
+    Err(QasmError::Parse(format!("bad rz argument `{}`", token)))
+}
+
+/// Read a text file containing a (restricted) OpenQASM-like circuit and return a [`Circuit`].
 pub fn read_qasm_file(path: &str) -> Result<Circuit, QasmError> {
     let f = File::open(path)?;
     let reader = BufReader::new(f);
@@ -96,18 +125,13 @@ pub fn read_qasm_file(path: &str) -> Result<Circuit, QasmError> {
 
     for line in reader.lines() {
         let line = line?;
-        // split each line at semicolons; there may be several instructions
         for stmt in line.split(';') {
             let stmt = stmt.trim();
             if stmt.is_empty() {
                 continue;
             }
-            // commas are not significant, e.g. "cz q[0],q[1]" -> "cz q[0] q[1]"
             let stmt = stmt.replace(',', " ");
-            let mut parts: Vec<&str> = stmt
-                .split_whitespace()
-                .filter(|s| !s.is_empty())
-                .collect();
+            let parts: Vec<&str> = stmt.split_whitespace().filter(|s| !s.is_empty()).collect();
             if parts.is_empty() || parts[0].starts_with('%') || parts[0].starts_with("//") {
                 continue;
             }
@@ -122,6 +146,11 @@ pub fn read_qasm_file(path: &str) -> Result<Circuit, QasmError> {
                 ["z", q] => circ.z(parse_qubit(q)?),
                 ["s", q] => circ.s(parse_qubit(q)?),
                 ["t", q] => circ.t(parse_qubit(q)?),
+                ["rz", arg, q] => {
+                    let qq = parse_qubit(q)?;
+                    let ph = parse_rz_phase(arg)?;
+                    circ.rz(qq, ph);
+                }
                 ["cz", a, b] => {
                     let aa = parse_qubit(a)?;
                     let bb = parse_qubit(b)?;
@@ -137,8 +166,11 @@ pub fn read_qasm_file(path: &str) -> Result<Circuit, QasmError> {
     Ok(circ)
 }
 
-/// Return a QASM‑2 string describing the circuit.  This is not a full
-/// implementation of the language but it round‑trips the routines above.
+/// Return a QASM string describing the circuit.
+///
+/// For speed and exactness, we emit `rz <phase>` as an integer phase in units π/2^PHASE_BITS.
+/// Example (PHASE_BITS=16):
+///   rz 16384 q[0];
 pub fn write_qasm_string(circ: &Circuit) -> String {
     let mut out = String::new();
     for g in &circ.gates {
@@ -147,42 +179,21 @@ pub fn write_qasm_string(circ: &Circuit) -> String {
             Gate::Z(q) => out.push_str(&format!("z q[{}];\n", q)),
             Gate::S(q) => out.push_str(&format!("s q[{}];\n", q)),
             Gate::T(q) => out.push_str(&format!("t q[{}];\n", q)),
+            Gate::RZ(q, ph) => out.push_str(&format!("rz {} q[{}];\n", ph, q)),
             Gate::CZ(a, b) => out.push_str(&format!("cz q[{}],q[{}];\n", a, b)),
         }
     }
     out
 }
 
-/// Convenience wrapper around `write_qasm_string` that writes the result to
-/// a file.
 pub fn write_qasm_file(path: &str, circ: &Circuit) -> io::Result<()> {
     let mut file = File::create(path)?;
     file.write_all(write_qasm_string(circ).as_bytes())
 }
 
-// simple tests ----------------------------------------------------------
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn round_trip_qasm() {
-        let src = "h q[0]; cz q[0],q[1]; h q[1];";
-        let circ = read_qasm_string(src).unwrap();
-        assert_eq!(circ.num_qubits, 2);
-        assert_eq!(circ.gates, vec![Gate::H(0), Gate::CZ(0, 1), Gate::H(1)]);
-        let back = write_qasm_string(&circ);
-        assert!(back.contains("h q[0];"));
-        assert!(back.contains("cz q[0],q[1];"));
-
-        // round‑trip through the file API as well
-        let tmp = std::env::temp_dir().join("polyq_roundtrip.qasm");
-        write_qasm_file(tmp.to_str().unwrap(), &circ).unwrap();
-        let circ2 = read_qasm_file(tmp.to_str().unwrap()).unwrap();
-        assert_eq!(circ2.num_qubits, circ.num_qubits);
-        assert_eq!(circ2.gates, circ.gates);
-    }
 
     // helper to parse directly from string (not exported)
     fn read_qasm_string(src: &str) -> Result<Circuit, QasmError> {
@@ -193,12 +204,8 @@ mod tests {
                 if stmt.is_empty() {
                     continue;
                 }
-                // treat commas as whitespace to separate operands
                 let stmt = stmt.replace(',', " ");
-                let mut parts: Vec<&str> = stmt
-                    .split_whitespace()
-                    .filter(|s| !s.is_empty())
-                    .collect();
+                let parts: Vec<&str> = stmt.split_whitespace().filter(|s| !s.is_empty()).collect();
                 if parts.is_empty() {
                     continue;
                 }
@@ -207,6 +214,7 @@ mod tests {
                     ["z", q] => circ.z(parse_qubit(q)?),
                     ["s", q] => circ.s(parse_qubit(q)?),
                     ["t", q] => circ.t(parse_qubit(q)?),
+                    ["rz", arg, q] => circ.rz(parse_qubit(q)?, parse_rz_phase(arg)?),
                     ["cz", a, b] => circ.cz(parse_qubit(a)?, parse_qubit(b)?),
                     _ => (),
                 }
@@ -214,7 +222,26 @@ mod tests {
         }
         Ok(circ)
     }
+
+    #[test]
+    fn round_trip_qasm() {
+        let src = "h q[0]; cz q[0],q[1]; rz 16384 q[1]; h q[1];";
+        let circ = read_qasm_string(src).unwrap();
+        assert_eq!(circ.num_qubits, 2);
+        assert_eq!(
+            circ.gates,
+            vec![Gate::H(0), Gate::CZ(0, 1), Gate::RZ(1, 16384u16), Gate::H(1)]
+        );
+
+        let back = write_qasm_string(&circ);
+        assert!(back.contains("h q[0];"));
+        assert!(back.contains("cz q[0],q[1];"));
+        assert!(back.contains("rz 16384 q[1];"));
+
+        let tmp = std::env::temp_dir().join("polyq_roundtrip.qasm");
+        write_qasm_file(tmp.to_str().unwrap(), &circ).unwrap();
+        let circ2 = read_qasm_file(tmp.to_str().unwrap()).unwrap();
+        assert_eq!(circ2.num_qubits, circ.num_qubits);
+        assert_eq!(circ2.gates, circ.gates);
+    }
 }
-
-
-

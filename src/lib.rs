@@ -7,16 +7,6 @@ pub mod sim;
 // re-export a convenient public API at the crate root so callers can write
 // `PolyQ::Gate` rather than `PolyQ::sim::Gate`.
 pub use sim::{
-    Gate,
-    Z8Term,
-    CompiledPhasePoly,
-    compile_clifford_t,
-    amplitude_clifford_t_accel,
-    simulate_statevector,
-    Circuit,
-    read_qasm_file,
-    write_qasm_file,
-    write_qasm_string,
-    QasmError,
+    amplitude_clifford_t_accel, compile_clifford_t, simulate_statevector, Circuit, CompiledPhasePoly,
+    Gate, Phase, PhaseTerm, PHASE_BITS, read_qasm_file, write_qasm_file, write_qasm_string, QasmError,
 };
-

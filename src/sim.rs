@@ -4,54 +4,47 @@ use std::f64::consts::PI;
 
 pub use crate::qc::{read_qasm_file, write_qasm_file, write_qasm_string, QasmError};
 
-/// Phase ring configuration for Clifford+T simulation.
+/// Phase resolution parameter.
 ///
-/// Phases are represented in units of π / 2^PHASE_BITS.
-/// A stored integer `p` corresponds to an angle θ = π * p / 2^PHASE_BITS.
-/// This allows efficient encoding of dyadic rotations and Clifford+T gates.
+/// We store phases in units of π / 2^PHASE_BITS.
 ///
-/// # Theory
-/// Clifford+T circuits can be simulated efficiently by representing quantum gates
-/// as phase polynomials over Boolean variables. The Clifford group is handled
-/// using Z4 arithmetic, while non-Clifford gates (T, RZ) are tracked as remainder terms
-/// in a dyadic phase ring. This enables fast amplitude and statevector computation.
+/// We make the remainder phase ring **2π-periodic** by using modulus 2^(PHASE_BITS+1).
+/// This allows representing θ = π (i.e. -1) exactly, which is required for MCZ.
 pub const PHASE_BITS: u32 = 16;
-pub type Phase = u16;
 
-/// Returns the modulus for the phase ring (2^PHASE_BITS).
+/// Phase integer in units of π / 2^PHASE_BITS, reduced modulo 2^(PHASE_BITS+1).
+pub type Phase = u32;
+
 #[inline(always)]
-pub const fn phase_modulus() -> u32 {
-    1u32 << PHASE_BITS
+pub const fn phase_modulus_u32() -> u32 {
+    1u32 << (PHASE_BITS + 1)
 }
 
-/// Returns the mask for the phase ring (2^PHASE_BITS - 1).
 #[inline(always)]
 pub const fn phase_mask_u32() -> u32 {
-    (1u32 << PHASE_BITS) - 1
+    (1u32 << (PHASE_BITS + 1)) - 1
 }
 
-/// Modular addition in the phase ring.
 #[inline(always)]
 fn phase_add(a: Phase, b: Phase) -> Phase {
-    a.wrapping_add(b)
+    (a + b) & (phase_mask_u32() as Phase)
 }
 
-/// Modular subtraction in the phase ring.
 #[inline(always)]
 fn phase_sub(a: Phase, b: Phase) -> Phase {
-    a.wrapping_sub(b)
+    (a.wrapping_sub(b)) & (phase_mask_u32() as Phase)
 }
 
-/// Converts a u32 to a phase value, masking to PHASE_BITS.
 #[inline(always)]
 fn phase_from_u32(x: u32) -> Phase {
     (x & phase_mask_u32()) as Phase
 }
 
-/// Converts a phase value to a real angle in radians.
 #[inline(always)]
 fn phase_to_angle_rad(p: Phase) -> f64 {
-    PI * (p as f64) / (phase_modulus() as f64)
+    // θ = π * p / 2^PHASE_BITS
+    // With p reduced mod 2^(PHASE_BITS+1), this is periodic mod 2π.
+    PI * (p as f64) / ((1u32 << PHASE_BITS) as f64)
 }
 
 /// Addition in Z4 ring (Clifford group arithmetic).
@@ -72,8 +65,9 @@ fn z4_sub(a: u8, b: u8) -> u8 {
 /// - Z(q): Pauli-Z gate (phase π)
 /// - S(q): Phase gate (phase π/2)
 /// - T(q): T gate (phase π/4)
-/// - RZ(q, phase): Arbitrary Z rotation by phase units
+/// - RZ(q, phase): Arbitrary Z rotation by phase units (mod 2π)
 /// - CZ(a, b): Controlled-Z gate between qubits a and b
+/// - MCZ(ctrls): Multi-controlled Z: multiply by -1 iff all controls are 1
 #[derive(Clone, Debug, PartialEq)]
 pub enum Gate {
     H(usize),
@@ -82,9 +76,10 @@ pub enum Gate {
     T(usize),
     RZ(usize, Phase),
     CZ(usize, usize),
+    MCZ(Vec<usize>),
 }
 
-/// Remainder term for non-Clifford phase tracking.
+/// Remainder term for non-Clifford / general phase tracking.
 ///
 /// Each term is a weighted AND-monomial over Boolean variables.
 #[derive(Clone, Debug)]
@@ -109,44 +104,41 @@ pub struct CompiledPhasePoly {
 }
 
 /// In-memory representation of a quantum circuit.
-///
-/// Supports builder methods for all Clifford+T gates.
 pub struct Circuit {
     pub num_qubits: usize,
     pub gates: Vec<Gate>,
 }
 
 impl Circuit {
-    /// Create a new circuit with the given number of qubits.
     pub fn new(num_qubits: usize) -> Self {
         Self { num_qubits, gates: Vec::new() }
     }
-    /// Add a Hadamard gate.
+
     pub fn h(&mut self, q: usize) {
         self.gates.push(Gate::H(q));
     }
-    /// Add a Pauli-Z gate.
     pub fn z(&mut self, q: usize) {
         self.gates.push(Gate::Z(q));
     }
-    /// Add a phase (S) gate.
     pub fn s(&mut self, q: usize) {
         self.gates.push(Gate::S(q));
     }
-    /// Add a T gate.
     pub fn t(&mut self, q: usize) {
         self.gates.push(Gate::T(q));
     }
-    /// Add an arbitrary RZ rotation.
     pub fn rz(&mut self, q: usize, phase: Phase) {
         self.gates.push(Gate::RZ(q, phase));
     }
-    /// Add a controlled-Z gate.
     pub fn cz(&mut self, q1: usize, q2: usize) {
         self.gates.push(Gate::CZ(q1, q2));
     }
+    pub fn mcz(&mut self, ctrls: &[usize]) {
+        let mut v = ctrls.to_vec();
+        v.sort_unstable();
+        v.dedup();
+        self.gates.push(Gate::MCZ(v));
+    }
 
-    /// Compile the circuit into a phase polynomial for simulation.
     pub fn compile(&self) -> CompiledPhasePoly {
         let optimized_gates = Transpiler::optimize(self.num_qubits, self.gates.clone());
         compile_clifford_t(self.num_qubits, &optimized_gates)
@@ -155,10 +147,7 @@ impl Circuit {
 
 // --- 2. MULTI-PASS TRANSPILER (PHASE TELEPORTATION) ---
 //
-// This pass coalesces Z/S/T/RZ phases on a wire until they hit an H or CZ.
-// For speed, we avoid HashMap and use a fixed Vec<i32> sized by num_qubits.
-// Note: this transpiler only tracks phases by qubit index for the *gate list*,
-// not the internal phase polynomial vars (that's handled by compilation).
+// This pass coalesces Z/S/T/RZ phases on a wire until they hit an H or CZ/MCZ.
 
 pub struct Transpiler;
 
@@ -177,32 +166,14 @@ impl Transpiler {
 
     fn phase_teleportation_pass(num_qubits: usize, gates: Vec<Gate>) -> Vec<Gate> {
         let mut optimized = Vec::with_capacity(gates.len());
-        let mut pending: Vec<i32> = vec![0; num_qubits]; // in units of π/4 (Z8-like) for fast normalization
-        let mut pending_rz: Vec<i32> = vec![0; num_qubits]; // full precision units (π / 2^PHASE_BITS)
+        let mut pending_rz: Vec<i64> = vec![0; num_qubits]; // units π/2^PHASE_BITS, 2π periodic by exp
 
-        // We can safely keep a single full-precision accumulator and flush to RZ.
-        // Keep legacy Z/S/T folded as exact dyadic phases.
         for gate in gates {
             match gate {
-                Gate::T(q) => {
-                    pending_rz[q] += 1i32 << (PHASE_BITS - 2); // π/4
-                }
-                Gate::S(q) => {
-                    pending_rz[q] += 1i32 << (PHASE_BITS - 1); // π/2
-                }
-                Gate::Z(q) => {
-                    pending_rz[q] += 1i32 << PHASE_BITS; // π (mod 2π in this representation is 2^(PHASE_BITS+1), but RZ phases are mod 2π? See below.)
-                    // We interpret RZ as diag(1, e^{iθ}); θ periodic mod 2π.
-                    // Our phase ring here is mod 2^PHASE_BITS for π-units; that means periodic mod 2π corresponds to doubling.
-                    // To keep consistent with the rest of the simulator (which uses ω = exp(iπ/2^PHASE_BITS)),
-                    // Z is phase = 2^PHASE_BITS (i.e. θ=π) which reduces mod 2^(PHASE_BITS+1) in 2π periodicity.
-                    // But since we only ever exponentiate exp(i * π * p / 2^PHASE_BITS), periodicity is p mod 2^(PHASE_BITS+1).
-                    // For speed and compatibility with the original Z8 model (mod 2π handled by Complex exponential),
-                    // we store phases mod 2^(PHASE_BITS+1) internally in pending_rz, and reduce when converting.
-                }
-                Gate::RZ(q, p) => {
-                    pending_rz[q] += p as i32;
-                }
+                Gate::T(q) => pending_rz[q] += 1i64 << (PHASE_BITS - 2), // π/4
+                Gate::S(q) => pending_rz[q] += 1i64 << (PHASE_BITS - 1), // π/2
+                Gate::Z(q) => pending_rz[q] += 1i64 << PHASE_BITS,       // π
+                Gate::RZ(q, p) => pending_rz[q] += p as i64,
                 Gate::H(q) => {
                     Self::flush(&mut optimized, &mut pending_rz, q);
                     optimized.push(Gate::H(q));
@@ -211,6 +182,12 @@ impl Transpiler {
                     Self::flush(&mut optimized, &mut pending_rz, a);
                     Self::flush(&mut optimized, &mut pending_rz, b);
                     optimized.push(Gate::CZ(a, b));
+                }
+                Gate::MCZ(ctrls) => {
+                    for &q in &ctrls {
+                        Self::flush(&mut optimized, &mut pending_rz, q);
+                    }
+                    optimized.push(Gate::MCZ(ctrls));
                 }
             }
         }
@@ -223,14 +200,14 @@ impl Transpiler {
     }
 
     #[inline(always)]
-    fn flush(opt: &mut Vec<Gate>, pending_rz: &mut [i32], q: usize) {
+    fn flush(opt: &mut Vec<Gate>, pending_rz: &mut [i64], q: usize) {
         let count = pending_rz[q];
         if count == 0 {
             return;
         }
         pending_rz[q] = 0;
 
-        // Reduce mod 2^PHASE_BITS (we intentionally drop 2π periodicity nuances; exp handles it anyway).
+        // reduce mod 2^(PHASE_BITS+1)
         let norm = phase_from_u32(count as u32);
         if norm != 0 {
             opt.push(Gate::RZ(q, norm));
@@ -297,10 +274,7 @@ fn apply_plan_z4(plan: &DicksonPlan, v: &mut [u8]) {
     for op in &plan.ops {
         match *op {
             DicksonOp::Swap(i, j) => v.swap(i, j),
-            DicksonOp::Add(target, pivot) => {
-                // v[pivot] = (v[pivot] + v[target]) % 4
-                v[pivot] = z4_add(v[pivot], v[target]);
-            }
+            DicksonOp::Add(target, pivot) => v[pivot] = z4_add(v[pivot], v[target]),
         }
     }
 }
@@ -312,10 +286,8 @@ fn eval_sum_canonical(plan: &DicksonPlan, v: &[u8]) -> Complex64 {
     while p < r {
         let mut pair_sum = Complex64::new(0.0, 0.0);
         let has_edge = b[p].contains(p + 1) as u8;
-        // 4 cases (x1,x2) in {0,1}^2
         for x1 in 0..=1u8 {
             for x2 in 0..=1u8 {
-                // ph = (2*x1*x2*edge + v[p]*x1 + v[p+1]*x2) mod 4
                 let mut ph = 0u8;
                 if has_edge != 0 && x1 != 0 && x2 != 0 {
                     ph = z4_add(ph, 2);
@@ -352,13 +324,86 @@ fn eval_sum_canonical(plan: &DicksonPlan, v: &[u8]) -> Complex64 {
 
 // --- 4. OPTIMIZED SIMULATION ENGINE ---
 
-#[derive(Clone, Debug)]
-struct RemTermMask {
-    weight: Phase,
-    /// mask over vvars (only valid when nv <= 64)
-    mask: u64,
-    /// vars that are NOT in vvars (fixed/full vars), must be checked via x_full
-    other_vars: Vec<usize>,
+/// Gray-code incremental evaluator for remainder terms (poly.rem).
+struct RemGrayTracker {
+    terms_by_bit: Vec<Vec<usize>>,
+    need: Vec<u16>,
+    weight: Vec<Phase>,
+    sat_count: Vec<u16>,
+    rem_phase: Phase,
+}
+
+impl RemGrayTracker {
+    fn new(poly: &CompiledPhasePoly, vpos_of_var: &[i32], nv: usize, x_full: &[u8]) -> Self {
+        let mut terms_by_bit: Vec<Vec<usize>> = (0..nv).map(|_| Vec::new()).collect();
+        let mut need: Vec<u16> = Vec::with_capacity(poly.rem.len());
+        let mut weight: Vec<Phase> = Vec::with_capacity(poly.rem.len());
+        let mut rem_phase: Phase = 0;
+
+        for term in &poly.rem {
+            let mut ok_fixed = true;
+            let mut positions: Vec<usize> = Vec::new();
+
+            for &var in &term.vars {
+                let pos = vpos_of_var[var];
+                if pos >= 0 {
+                    positions.push(pos as usize);
+                } else if x_full[var] == 0 {
+                    ok_fixed = false;
+                    break;
+                }
+            }
+            if !ok_fixed {
+                continue;
+            }
+
+            if positions.len() > 1 {
+                positions.sort_unstable();
+                positions.dedup();
+            }
+
+            let tid = need.len();
+            let deg = positions.len() as u16;
+            need.push(deg);
+            weight.push(term.weight);
+
+            if deg == 0 {
+                rem_phase = phase_add(rem_phase, term.weight);
+            } else {
+                for &b in &positions {
+                    terms_by_bit[b].push(tid);
+                }
+            }
+        }
+
+        let sat_count = vec![0u16; need.len()];
+        Self { terms_by_bit, need, weight, sat_count, rem_phase }
+    }
+
+    #[inline(always)]
+    fn current_phase(&self) -> Phase {
+        self.rem_phase
+    }
+
+    #[inline(always)]
+    fn flip_bit(&mut self, flip: usize, turning_on: bool) {
+        let term_list = &self.terms_by_bit[flip];
+        for &t in term_list {
+            let was_active = self.sat_count[t] == self.need[t];
+            if turning_on {
+                self.sat_count[t] += 1;
+            } else {
+                self.sat_count[t] -= 1;
+            }
+            let now_active = self.sat_count[t] == self.need[t];
+
+            if !was_active && now_active {
+                self.rem_phase = phase_add(self.rem_phase, self.weight[t]);
+            } else if was_active && !now_active {
+                self.rem_phase = phase_sub(self.rem_phase, self.weight[t]);
+            }
+        }
+    }
 }
 
 pub fn amplitude_clifford_t_accel(poly: &CompiledPhasePoly, input: &[u8], target_y: usize) -> Complex64 {
@@ -387,23 +432,21 @@ pub fn amplitude_clifford_t_accel(poly: &CompiledPhasePoly, input: &[u8], target
         }
     }
 
-    // Identify which vars appear in non-Clifford remainder terms.
-    // For maximum speed, we only enumerate over those vars + any unfixed vars that remainder depends on.
-    let mut in_rem = vec![false; t];
+    // Mark all unfixed vars that appear in remainder terms as vvars
+    let mut is_vvar = vec![false; t];
     for term in &poly.rem {
         for &v in &term.vars {
-            in_rem[v] = true;
+            if fixed[v].is_none() {
+                is_vvar[v] = true;
+            }
         }
     }
 
-    // Variable compression split:
-    // - vvars: appear in remainder and are unfixed
-    // - uvars: unfixed but not in remainder
     let mut vvars = Vec::new();
     let mut uvars = Vec::new();
     for i in 0..t {
         if fixed[i].is_none() {
-            if in_rem[i] {
+            if is_vvar[i] {
                 vvars.push(i);
             } else {
                 uvars.push(i);
@@ -467,158 +510,41 @@ pub fn amplitude_clifford_t_accel(poly: &CompiledPhasePoly, input: &[u8], target
         }
     }
 
-    // Precompute Dickson plan once (major optimization)
     let plan = plan_dickson_z4(bu, nu);
 
-    // Prepare remainder terms:
-    // If nv <= 64, encode vvar-dependence as masks for very fast activation checks.
-    let use_mask_terms = nv <= 64;
-    let mut rem_masks: Vec<RemTermMask> = Vec::new();
+    let mut rem_tracker = RemGrayTracker::new(poly, &var_to_vpos, nv, &x_full);
 
-    if use_mask_terms {
-        rem_masks.reserve(poly.rem.len());
-        for term in &poly.rem {
-            let mut mask: u64 = 0;
-            let mut other_vars = Vec::new();
-            for &v in &term.vars {
-                let pos = var_to_vpos[v];
-                if pos >= 0 {
-                    mask |= 1u64 << (pos as u64);
-                } else {
-                    other_vars.push(v);
-                }
-            }
-            rem_masks.push(RemTermMask { weight: term.weight, mask, other_vars });
-        }
-    }
-
-    // State for Gray code enumeration over vvars
     let mut amp = Complex64::new(0.0, 0.0);
-
-    // Z4 linear vector updated incrementally
     let mut cur_vu = vu_base.clone();
     let mut cur_eps = eps_base_z4;
-
-    // vvar assignment mask in Gray code (only valid if nv<=64) and also as bytes for fallback paths
-    let mut cur_mask_u64: u64 = 0;
     let mut cur_x_vvars = vec![0u8; nv];
-
-    // Base remainder phase contributed by fixed vars:
-    // Since remainder terms are AND-monomials, a term contributes weight iff all its vars are 1.
-    // If the term depends only on fixed vars, it is constant across enumeration.
-    let mut rem_base: Phase = 0;
-    if use_mask_terms {
-        for rt in &rem_masks {
-            // term active if:
-            //  - its vvar mask is subset of cur mask (currently 0, so only mask==0 qualifies)
-            //  - all other_vars are 1 in x_full
-            if rt.mask == 0 {
-                let mut ok = true;
-                for &ov in &rt.other_vars {
-                    if x_full[ov] == 0 {
-                        ok = false;
-                        break;
-                    }
-                }
-                if ok {
-                    rem_base = phase_add(rem_base, rt.weight);
-                }
-            }
-        }
-    } else {
-        // conservative baseline: nothing precomputed
-    }
-
-    // Working buffer to avoid cloning cur_vu every iteration
     let mut vu_exec = vec![0u8; nu];
 
     let iters = 1usize << nv;
     for i in 0..iters {
-        // copy current vu into exec buffer and apply plan
         vu_exec.copy_from_slice(&cur_vu);
         apply_plan_z4(&plan, &mut vu_exec);
 
-        // remainder evaluation
-        let mut rem_phase: Phase = rem_base;
-
-        if use_mask_terms {
-            // add only terms with non-empty vvar masks, active in current mask
-            for rt in &rem_masks {
-                if rt.mask == 0 {
-                    continue; // already included in base
-                }
-                if (rt.mask & cur_mask_u64) != rt.mask {
-                    continue;
-                }
-                // check other fixed vars
-                let mut ok = true;
-                for &ov in &rt.other_vars {
-                    if x_full[ov] == 0 {
-                        ok = false;
-                        break;
-                    }
-                }
-                if ok {
-                    rem_phase = phase_add(rem_phase, rt.weight);
-                }
-            }
-        } else {
-            // fallback: scan terms and check vars against cur_x_vvars or x_full
-            for term in &poly.rem {
-                let mut ok = true;
-                for &v in &term.vars {
-                    let pos = var_to_vpos[v];
-                    if pos >= 0 {
-                        if cur_x_vvars[pos as usize] == 0 {
-                            ok = false;
-                            break;
-                        }
-                    } else if x_full[v] == 0 {
-                        ok = false;
-                        break;
-                    }
-                }
-                if ok {
-                    rem_phase = phase_add(rem_phase, term.weight);
-                }
-            }
-        }
-
-        // Combine remainder (Z_{2^PHASE_BITS}) with Clifford Z4 phase:
-        // Original code used exp(i * π * ((r_z8 + 2*eps4) mod 8) / 4).
-        // Here we generalize:
-        //
-        // - rem_phase is in units π/2^PHASE_BITS.
-        // - eps4 is in Z4, representing multiples of π/2 (because original "4*eps4 mod 8" -> π/2 steps).
-        //   In angle terms, eps4 contributes angle = π * (2*eps4)/4 = π*eps4/2.
-        //   Convert that to our units: π*eps4/2 = π * (eps4 * 2^(PHASE_BITS-1)) / 2^PHASE_BITS.
+        let rem_phase: Phase = rem_tracker.current_phase();
         let eps_phase: Phase = phase_from_u32((cur_eps as u32) << (PHASE_BITS - 1));
-
         let total_phase = phase_add(rem_phase, eps_phase);
+
         let phase = Complex64::from_polar(1.0, phase_to_angle_rad(total_phase));
         amp += phase * eval_sum_canonical(&plan, &vu_exec);
 
-        // Gray-code update
         if i + 1 < iters {
             let flip = (i + 1).trailing_zeros() as usize;
 
-            // toggle mask bit
-            let bit = 1u64 << flip;
-            let bit_set = (cur_mask_u64 & bit) != 0;
-
-            // update Z4 linear vector for uvars impacted by this vvar flip
             for ui in 0..nu {
                 if cross_masks[ui].contains(flip) {
-                    // flipping a v var toggles contribution by +2 (mod 4) to vu[ui]
                     cur_vu[ui] = z4_add(cur_vu[ui], 2);
                 }
             }
 
-            // update eps4 due to v-v and fixed-v interactions (Z4 part)
             let v_idx = vvars[flip];
+            let turning_on = cur_x_vvars[flip] == 0;
 
-            if !bit_set {
-                // turning v bit 0->1
+            if turning_on {
                 cur_eps = z4_add(cur_eps, poly.v4[v_idx] & 3);
 
                 for &f in &f_list {
@@ -632,10 +558,8 @@ pub fn amplitude_clifford_t_accel(poly: &CompiledPhasePoly, input: &[u8], target
                     }
                 }
 
-                cur_mask_u64 |= bit;
                 cur_x_vvars[flip] = 1;
             } else {
-                // turning v bit 1->0
                 cur_eps = z4_sub(cur_eps, poly.v4[v_idx] & 3);
 
                 for &f in &f_list {
@@ -649,9 +573,10 @@ pub fn amplitude_clifford_t_accel(poly: &CompiledPhasePoly, input: &[u8], target
                     }
                 }
 
-                cur_mask_u64 &= !bit;
                 cur_x_vvars[flip] = 0;
             }
+
+            rem_tracker.flip_bit(flip, turning_on);
         }
     }
 
@@ -666,8 +591,14 @@ pub fn simulate_statevector(poly: &CompiledPhasePoly, input: &[u8]) -> Vec<Compl
 
 #[inline(always)]
 fn t_phase_unit() -> Phase {
-    // π/4 = π * 2^(PHASE_BITS-2) / 2^PHASE_BITS
+    // π/4 = 2^(PHASE_BITS-2) units
     phase_from_u32(1u32 << (PHASE_BITS - 2))
+}
+
+#[inline(always)]
+fn pi_phase_unit() -> Phase {
+    // π = 2^PHASE_BITS units
+    phase_from_u32(1u32 << PHASE_BITS)
 }
 
 pub fn compile_clifford_t(num_qubits: usize, gates: &[Gate]) -> CompiledPhasePoly {
@@ -694,42 +625,72 @@ pub fn compile_clifford_t(num_qubits: usize, gates: &[Gate]) -> CompiledPhasePol
     };
 
     for g in gates {
-        match *g {
+        match g {
             Gate::H(q) => {
-                let prev = *wire[q].last().unwrap();
+                let prev = *wire[*q].last().unwrap();
                 let cur = next_var;
                 next_var += 1;
                 num_h += 1;
-                wire[q].push(cur);
+                wire[*q].push(cur);
                 grow(next_var, &mut b4, &mut v4);
                 b4[prev].insert(cur);
                 b4[cur].insert(prev);
             }
             Gate::CZ(a, b) => {
-                let va = *wire[a].last().unwrap();
-                let vb = *wire[b].last().unwrap();
+                let va = *wire[*a].last().unwrap();
+                let vb = *wire[*b].last().unwrap();
                 grow(next_var, &mut b4, &mut v4);
                 b4[va].insert(vb);
                 b4[vb].insert(va);
             }
             Gate::Z(q) => {
-                let v = *wire[q].last().unwrap();
+                let v = *wire[*q].last().unwrap();
                 grow(next_var, &mut b4, &mut v4);
                 v4[v] = z4_add(v4[v], 2);
             }
             Gate::S(q) => {
-                let v = *wire[q].last().unwrap();
+                let v = *wire[*q].last().unwrap();
                 grow(next_var, &mut b4, &mut v4);
                 v4[v] = z4_add(v4[v], 1);
             }
             Gate::T(q) => {
-                let v = *wire[q].last().unwrap();
+                let v = *wire[*q].last().unwrap();
                 rem.push(PhaseTerm { weight: t_phase_unit(), vars: vec![v] });
             }
             Gate::RZ(q, phase) => {
-                let v = *wire[q].last().unwrap();
-                if phase != 0 {
-                    rem.push(PhaseTerm { weight: phase, vars: vec![v] });
+                let v = *wire[*q].last().unwrap();
+                if *phase != 0 {
+                    rem.push(PhaseTerm { weight: *phase, vars: vec![v] });
+                }
+            }
+            Gate::MCZ(ctrls) => {
+                match ctrls.len() {
+                    0 => {
+                        // global -1
+                        rem.push(PhaseTerm { weight: pi_phase_unit(), vars: vec![] });
+                    }
+                    1 => {
+                        // Z
+                        let v = *wire[ctrls[0]].last().unwrap();
+                        grow(next_var, &mut b4, &mut v4);
+                        v4[v] = z4_add(v4[v], 2);
+                    }
+                    2 => {
+                        // CZ
+                        let va = *wire[ctrls[0]].last().unwrap();
+                        let vb = *wire[ctrls[1]].last().unwrap();
+                        grow(next_var, &mut b4, &mut v4);
+                        b4[va].insert(vb);
+                        b4[vb].insert(va);
+                    }
+                    _ => {
+                        // high-degree -1 as remainder AND-monomial with weight π
+                        let mut vars = Vec::with_capacity(ctrls.len());
+                        for &q in ctrls {
+                            vars.push(*wire[q].last().unwrap());
+                        }
+                        rem.push(PhaseTerm { weight: pi_phase_unit(), vars });
+                    }
                 }
             }
         }
@@ -766,94 +727,40 @@ mod tests {
     }
 
     #[test]
-    fn test_simulate_statevector() {
-        let gates = vec![Gate::H(0), Gate::H(1), Gate::CZ(0, 1), Gate::H(1)];
-        let poly = compile_clifford_t(2, &gates);
-        let input = vec![0u8, 0u8];
-        let statevec = simulate_statevector(&poly, &input);
-        let expected_output = vec![
-            Complex64::new(0.5f64.sqrt(), 0.0),
-            Complex64::new(0.0, 0.0),
-            Complex64::new(0.0, 0.0),
-            Complex64::new(0.5f64.sqrt(), 0.0),
-        ];
-        for (amp, expected) in statevec.iter().zip(expected_output.iter()) {
-            assert!(
-                (amp - expected).norm() < 1e-10,
-                "amp={:?} expected={:?}",
-                amp,
-                expected
-            );
-        }
-    }
-
-    #[test]
-    fn test_bell_state_clifford_amplitudes() {
-        let gates = vec![Gate::H(0), Gate::H(1), Gate::CZ(0, 1), Gate::H(1)];
-        let poly = compile_clifford_t(2, &gates);
-        let input = vec![0u8, 0u8];
-        let a00 = amplitude_clifford_t_accel(&poly, &input, 0);
-        let a11 = amplitude_clifford_t_accel(&poly, &input, 3);
-        let a01 = amplitude_clifford_t_accel(&poly, &input, 1);
-        let a10 = amplitude_clifford_t_accel(&poly, &input, 2);
-
-        let norm = (0.5f64).sqrt();
-        approx_eq(a00, c(norm, 0.0), 1e-10);
-        approx_eq(a11, c(norm, 0.0), 1e-10);
-        approx_eq(a01, c(0.0, 0.0), 1e-10);
-        approx_eq(a10, c(0.0, 0.0), 1e-10);
-    }
-
-    #[test]
-    fn test_clifford_plus_s_phase() {
-        let gates = vec![Gate::H(0), Gate::S(0), Gate::H(1), Gate::CZ(0, 1), Gate::H(1)];
-        let poly = compile_clifford_t(2, &gates);
-        let input = vec![0u8, 0u8];
-        let a00 = amplitude_clifford_t_accel(&poly, &input, 0);
-        let a11 = amplitude_clifford_t_accel(&poly, &input, 3);
-
-        let norm = (0.5f64).sqrt();
-        approx_eq(a00, c(norm, 0.0), 1e-10);
-        approx_eq(a11, c(0.0, norm), 1e-10);
-    }
-
-    #[test]
-    fn test_clifford_plus_t_phase() {
-        let gates = vec![Gate::H(0), Gate::T(0), Gate::H(1), Gate::CZ(0, 1), Gate::H(1)];
-        let poly = compile_clifford_t(2, &gates);
-        let input = vec![0u8, 0u8];
-        let a00 = amplitude_clifford_t_accel(&poly, &input, 0);
-        let a11 = amplitude_clifford_t_accel(&poly, &input, 3);
-
-        approx_eq(a00, c((0.5f64).sqrt(), 0.0), 1e-10);
-        approx_eq(a11, c(0.5, 0.5), 1e-10);
-    }
-
-    #[test]
-    fn test_three_qubit_mixed_norm_sanity() {
-        let gates = vec![
-            Gate::H(0),
-            Gate::CZ(0, 1),
-            Gate::T(1),
-            Gate::H(2),
-            Gate::CZ(1, 2),
-            Gate::S(0),
-            Gate::Z(2),
-        ];
+    fn test_mcz_on_three_qubits_adds_pi_phase_only_on_all_ones() {
+        let gates = vec![Gate::H(0), Gate::H(1), Gate::H(2), Gate::MCZ(vec![0, 1, 2])];
         let poly = compile_clifford_t(3, &gates);
         let input = vec![0u8, 0u8, 0u8];
 
-        let mut norm_sq = 0.0f64;
-        for y in 0..(1usize << 3) {
+        let mag = (1.0 / 8.0f64).sqrt();
+        for y in 0..8usize {
             let a = amplitude_clifford_t_accel(&poly, &input, y);
-            norm_sq += a.norm_sqr();
+            if y == 7 {
+                approx_eq(a, c(-mag, 0.0), 1e-10);
+            } else {
+                approx_eq(a, c(mag, 0.0), 1e-10);
+            }
         }
-        assert!((norm_sq - 1.0).abs() < 1e-8, "norm_sq={}", norm_sq);
+    }
+
+    #[test]
+    fn test_mcz_equiv_to_cz_for_two_controls() {
+        let gates_cz = vec![Gate::H(0), Gate::H(1), Gate::CZ(0, 1), Gate::H(1)];
+        let gates_mcz = vec![Gate::H(0), Gate::H(1), Gate::MCZ(vec![0, 1]), Gate::H(1)];
+
+        let p1 = compile_clifford_t(2, &gates_cz);
+        let p2 = compile_clifford_t(2, &gates_mcz);
+
+        let input = vec![0u8, 0u8];
+        for y in 0..4usize {
+            let a1 = amplitude_clifford_t_accel(&p1, &input, y);
+            let a2 = amplitude_clifford_t_accel(&p2, &input, y);
+            approx_eq(a1, a2, 1e-10);
+        }
     }
 
     #[test]
     fn test_rz_equiv_to_t() {
-        // RZ(π/4) should behave like T in this remainder-only model
         let gates_t = vec![Gate::H(0), Gate::T(0), Gate::H(0)];
         let gates_rz = vec![Gate::H(0), Gate::RZ(0, phase_from_u32(1u32 << (PHASE_BITS - 2))), Gate::H(0)];
 

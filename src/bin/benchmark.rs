@@ -1,10 +1,12 @@
+#![allow(dead_code)]
+#![allow(unused_mut)]
+
+
 use PolyQ::amplitude_clifford_t_accel;
-use PolyQ::sim::{self, Circuit, simulate_statevector};
+use PolyQ::sim::{Circuit, simulate_statevector};
 use PolyQ::qc::read_qasm_file;
 use std::time::Instant;
-use std::fs::File;
-use std::io::Read;
-use std::path::Path;
+
 
 
 //clifford circuits
@@ -43,7 +45,7 @@ fn build_qft(n: usize) -> Circuit {
         for j in (i + 1)..n {
             // Controlled RZ: phase = PI / 2^(j-i)
             let k = j - i + 1;
-            let phase = 1u16 << (16 - k); // PHASE_BITS = 16
+            let phase = 1u32 << (16 - k); // PHASE_BITS = 16
             circ.rz(i, phase);
         }
     }

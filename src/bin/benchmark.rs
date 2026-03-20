@@ -1,18 +1,14 @@
 #![allow(dead_code)]
 #![allow(unused_mut)]
 
-
 use PolyQ::amplitude_clifford_t_accel;
-use PolyQ::sim::{Circuit, simulate_statevector};
 use PolyQ::qc::read_qasm_file;
+use PolyQ::sim::{Circuit, simulate_statevector};
 use std::time::Instant;
-
-
 
 //clifford circuits
 fn build_bv(n: usize, secret: &[u8]) -> Circuit {
-
-// Build a Bernstein–Vazirani circuit for a secret bitstring.
+    // Build a Bernstein–Vazirani circuit for a secret bitstring.
     let mut circ = Circuit::new(n);
 
     // initial Hadamards
@@ -34,7 +30,6 @@ fn build_bv(n: usize, secret: &[u8]) -> Circuit {
 
     circ
 }
-
 
 //non‑clifford circuits
 fn build_qft(n: usize) -> Circuit {
@@ -101,11 +96,13 @@ fn benchmark_bv_statevector(n: usize) {
         .enumerate()
         .fold(0usize, |acc, (i, &b)| acc | ((b as usize) << i));
     println!("simulation time: {:?}", elapsed);
-    println!("amplitude at expected index {} = {:?}", expected, state[expected]);
+    println!(
+        "amplitude at expected index {} = {:?}",
+        expected, state[expected]
+    );
     let norm_sq: f64 = state.iter().map(|c| c.norm_sqr()).sum();
     println!("state norm squared = {}", norm_sq);
 }
-
 
 fn benchmark_bv_amplitude(n: usize) {
     // predetermined secret: alternating 1,0 pattern
@@ -147,7 +144,6 @@ fn simulate_qasm_amplitude(qasm_path: &str) {
     let elapsed = start.elapsed();
     println!("Amplitude at index {} = {:?}", target_index, amp);
     println!("Amplitude simulation time: {:?}", elapsed);
-
 }
 
 fn simulate_qasm_statevector(qasm_path: &str) {
@@ -172,11 +168,8 @@ fn simulate_qasm_statevector(qasm_path: &str) {
     println!("state norm squared = {}", norm_sq);
 }
 
-
-
 fn main() {
-
-    // cargo run --release --bin benchmark 
+    // cargo run --release --bin benchmark
     // cargo flamegraph --release --bin benchmark
     // samply record cargo run --release
     // RUSTFLAGS="-C force-frame-pointers=yes" samply record cargo run --release
@@ -245,4 +238,3 @@ QASM simulation time: 6.535101875s
 state norm squared = 1
 
 */
-

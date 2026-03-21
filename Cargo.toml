@@ -11,6 +11,5 @@ flamegraph = "0.6.11"
 
 [profile.release]
 opt-level = 3
-lto = true
-debug = 2
+lto = "fat"
 codegen-units = 1 

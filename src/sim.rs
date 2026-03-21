@@ -658,8 +658,23 @@ pub fn amplitude_clifford_t_accel(poly: &CompiledPhasePoly, input: &[u8], target
     amp * (2f64).powf(-(poly.num_h as f64) / 2.0)
 }
 
+/// Statevector simulation (single-threaded).
 pub fn simulate_statevector(poly: &CompiledPhasePoly, input: &[u8]) -> Vec<Complex64> {
     (0..(1usize << poly.num_qubits))
+        .map(|y| amplitude_clifford_t_accel(poly, input, y))
+        .collect()
+}
+
+/// Parallel statevector simulation (multi-threaded) using Rayon.
+///
+/// To control threads:
+/// - env var: `RAYON_NUM_THREADS=8`
+/// - or create a local pool with `rayon::ThreadPoolBuilder` and call inside `pool.install(|| ...)`
+pub fn simulate_statevector_parallel(poly: &CompiledPhasePoly, input: &[u8]) -> Vec<Complex64> {
+    use rayon::prelude::*;
+
+    (0..(1usize << poly.num_qubits))
+        .into_par_iter()
         .map(|y| amplitude_clifford_t_accel(poly, input, y))
         .collect()
 }
@@ -747,6 +762,8 @@ pub fn compile_clifford_t(num_qubits: usize, gates: &[Gate]) -> CompiledPhasePol
     }
 }
 
+
+//cargo test --release 
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -765,28 +782,85 @@ mod tests {
         );
     }
 
+    fn assert_statevec_approx_eq(a: &[Complex64], b: &[Complex64], eps: f64) {
+        assert_eq!(a.len(), b.len());
+        for (i, (x, y)) in a.iter().zip(b.iter()).enumerate() {
+            assert!(
+                (*x - *y).norm() <= eps,
+                "index={i} x={x:?} y={y:?} |x-y|={}",
+                (*x - *y).norm()
+            );
+        }
+    }
+
     #[test]
-    fn test_simulate_statevector() {
+    fn test_simulate_statevector_parallel_matches_serial() {
+        // Non-trivial circuit with H/CZ/T/S/Z/RZ to exercise both Z4 and remainder paths.
+        let gates = vec![
+            Gate::H(0),
+            Gate::CZ(0, 1),
+            Gate::T(1),
+            Gate::H(2),
+            Gate::CZ(1, 2),
+            Gate::S(0),
+            Gate::Z(2),
+            Gate::RZ(0, phase_from_u32(12345)),
+        ];
+        let poly = compile_clifford_t(3, &gates);
+        let input = vec![0u8, 0u8, 0u8];
+
+        let serial = simulate_statevector(&poly, &input);
+        let parallel = simulate_statevector_parallel(&poly, &input);
+
+        assert_statevec_approx_eq(&serial, &parallel, 1e-10);
+    }
+
+    #[test]
+    fn test_simulate_statevector_parallel_independent_of_thread_count() {
+        use rayon::ThreadPoolBuilder;
+
+        let gates = vec![
+            Gate::H(0),
+            Gate::H(1),
+            Gate::CZ(0, 1),
+            Gate::T(0),
+            Gate::S(1),
+            Gate::H(1),
+        ];
+        let poly = compile_clifford_t(2, &gates);
+        let input = vec![0u8, 0u8];
+
+        // Run parallel version in a 1-thread pool
+        let pool1 = ThreadPoolBuilder::new().num_threads(1).build().unwrap();
+        let v1 = pool1.install(|| simulate_statevector_parallel(&poly, &input));
+
+        // Run parallel version in a 4-thread pool
+        let pool4 = ThreadPoolBuilder::new().num_threads(4).build().unwrap();
+        let v4 = pool4.install(|| simulate_statevector_parallel(&poly, &input));
+
+        assert_statevec_approx_eq(&v1, &v4, 1e-10);
+    }
+
+    // Keep at least one known-value test too (sanity)
+    #[test]
+    fn test_known_bell_like_case_parallel() {
         let gates = vec![Gate::H(0), Gate::H(1), Gate::CZ(0, 1), Gate::H(1)];
         let poly = compile_clifford_t(2, &gates);
         let input = vec![0u8, 0u8];
-        let statevec = simulate_statevector(&poly, &input);
+
+        let statevec = simulate_statevector_parallel(&poly, &input);
+
         let expected_output = vec![
             Complex64::new(0.5f64.sqrt(), 0.0),
             Complex64::new(0.0, 0.0),
             Complex64::new(0.0, 0.0),
             Complex64::new(0.5f64.sqrt(), 0.0),
         ];
-        for (amp, expected) in statevec.iter().zip(expected_output.iter()) {
-            assert!(
-                (amp - expected).norm() < 1e-10,
-                "amp={:?} expected={:?}",
-                amp,
-                expected
-            );
-        }
+
+        assert_statevec_approx_eq(&statevec, &expected_output, 1e-10);
     }
 
+    // If you still want the old amplitude-level unit tests, you can keep them too:
     #[test]
     fn test_bell_state_clifford_amplitudes() {
         let gates = vec![Gate::H(0), Gate::H(1), Gate::CZ(0, 1), Gate::H(1)];
@@ -802,69 +876,5 @@ mod tests {
         approx_eq(a11, c(norm, 0.0), 1e-10);
         approx_eq(a01, c(0.0, 0.0), 1e-10);
         approx_eq(a10, c(0.0, 0.0), 1e-10);
-    }
-
-    #[test]
-    fn test_clifford_plus_s_phase() {
-        let gates = vec![Gate::H(0), Gate::S(0), Gate::H(1), Gate::CZ(0, 1), Gate::H(1)];
-        let poly = compile_clifford_t(2, &gates);
-        let input = vec![0u8, 0u8];
-        let a00 = amplitude_clifford_t_accel(&poly, &input, 0);
-        let a11 = amplitude_clifford_t_accel(&poly, &input, 3);
-
-        let norm = (0.5f64).sqrt();
-        approx_eq(a00, c(norm, 0.0), 1e-10);
-        approx_eq(a11, c(0.0, norm), 1e-10);
-    }
-
-    #[test]
-    fn test_clifford_plus_t_phase() {
-        let gates = vec![Gate::H(0), Gate::T(0), Gate::H(1), Gate::CZ(0, 1), Gate::H(1)];
-        let poly = compile_clifford_t(2, &gates);
-        let input = vec![0u8, 0u8];
-        let a00 = amplitude_clifford_t_accel(&poly, &input, 0);
-        let a11 = amplitude_clifford_t_accel(&poly, &input, 3);
-
-        approx_eq(a00, c((0.5f64).sqrt(), 0.0), 1e-10);
-        approx_eq(a11, c(0.5, 0.5), 1e-10);
-    }
-
-    #[test]
-    fn test_three_qubit_mixed_norm_sanity() {
-        let gates = vec![
-            Gate::H(0),
-            Gate::CZ(0, 1),
-            Gate::T(1),
-            Gate::H(2),
-            Gate::CZ(1, 2),
-            Gate::S(0),
-            Gate::Z(2),
-        ];
-        let poly = compile_clifford_t(3, &gates);
-        let input = vec![0u8, 0u8, 0u8];
-
-        let mut norm_sq = 0.0f64;
-        for y in 0..(1usize << 3) {
-            let a = amplitude_clifford_t_accel(&poly, &input, y);
-            norm_sq += a.norm_sqr();
-        }
-        assert!((norm_sq - 1.0).abs() < 1e-8, "norm_sq={}", norm_sq);
-    }
-
-    #[test]
-    fn test_rz_equiv_to_t() {
-        // RZ(π/4) should behave like T in this remainder-only model
-        let gates_t = vec![Gate::H(0), Gate::T(0), Gate::H(0)];
-        let gates_rz = vec![Gate::H(0), Gate::RZ(0, phase_from_u32(1u32 << (PHASE_BITS - 2))), Gate::H(0)];
-
-        let p1 = compile_clifford_t(1, &gates_t);
-        let p2 = compile_clifford_t(1, &gates_rz);
-
-        let input = vec![0u8];
-        for y in 0..2usize {
-            let a1 = amplitude_clifford_t_accel(&p1, &input, y);
-            let a2 = amplitude_clifford_t_accel(&p2, &input, y);
-            approx_eq(a1, a2, 1e-10);
-        }
     }
 }

@@ -1,4 +1,4 @@
-use crate::{compile_clifford_t, CompiledPhasePoly, Gate, Phase, PHASE_BITS};
+use crate::{CompiledPhasePoly, Gate, PHASE_BITS, Phase, compile_clifford_t};
 use std::fs::File;
 use std::io::{self, BufRead, BufReader, Write};
 
@@ -34,7 +34,10 @@ pub struct Circuit {
 
 impl Circuit {
     pub fn new(num_qubits: usize) -> Self {
-        Self { num_qubits, gates: Vec::new() }
+        Self {
+            num_qubits,
+            gates: Vec::new(),
+        }
     }
 
     pub fn from_gates(num_qubits: usize, gates: Vec<Gate>) -> Self {
@@ -263,7 +266,10 @@ mod tests {
         let src = "h q[0]; mcz q[0],q[1],q[2]; rz 65536 q[1];";
         let circ = read_qasm_string(src).unwrap();
         assert_eq!(circ.num_qubits, 3);
-        assert_eq!(circ.gates, vec![Gate::H(0), Gate::MCZ(vec![0, 1, 2]), Gate::RZ(1, 65536u32)]);
+        assert_eq!(
+            circ.gates,
+            vec![Gate::H(0), Gate::MCZ(vec![0, 1, 2]), Gate::RZ(1, 65536u32)]
+        );
 
         let back = write_qasm_string(&circ);
         assert!(back.contains("mcz q[0],q[1],q[2];"));

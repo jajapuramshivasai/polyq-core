@@ -2,7 +2,7 @@ use fixedbitset::FixedBitSet;
 use num_complex::Complex64;
 use std::f64::consts::PI;
 
-pub use crate::qc::{read_qasm_file, write_qasm_file, write_qasm_string, QasmError};
+pub use crate::qc::{QasmError, read_qasm_file, write_qasm_file, write_qasm_string};
 
 pub const PHASE_BITS: u32 = 16;
 
@@ -98,7 +98,10 @@ pub struct Circuit {
 
 impl Circuit {
     pub fn new(num_qubits: usize) -> Self {
-        Self { num_qubits, gates: Vec::new() }
+        Self {
+            num_qubits,
+            gates: Vec::new(),
+        }
     }
     pub fn h(&mut self, q: usize) {
         self.gates.push(Gate::H(q));
@@ -264,7 +267,9 @@ fn plan_dickson_z4(mut b: Vec<FixedBitSet>, m: usize) -> DicksonPlan {
                 }
             }
         }
-        let Some((i, j)) = pivot else { break; };
+        let Some((i, j)) = pivot else {
+            break;
+        };
         if i != p {
             b.swap(p, i);
             ops.push(DicksonOp::Swap(p, i));
@@ -289,7 +294,11 @@ fn plan_dickson_z4(mut b: Vec<FixedBitSet>, m: usize) -> DicksonPlan {
         r += 2;
         p += 2;
     }
-    DicksonPlan { ops, reduced_b: b, rank: r }
+    DicksonPlan {
+        ops,
+        reduced_b: b,
+        rank: r,
+    }
 }
 
 #[inline(always)]
@@ -398,7 +407,13 @@ impl RemGrayTracker {
         }
 
         let sat_count = vec![0u16; need.len()];
-        Self { terms_by_bit, need, weight, sat_count, rem_phase }
+        Self {
+            terms_by_bit,
+            need,
+            weight,
+            sat_count,
+            rem_phase,
+        }
     }
 
     #[inline(always)]
@@ -427,7 +442,11 @@ impl RemGrayTracker {
     }
 }
 
-pub fn amplitude_clifford_t_accel(poly: &CompiledPhasePoly, input: &[u8], target_y: usize) -> Complex64 {
+pub fn amplitude_clifford_t_accel(
+    poly: &CompiledPhasePoly,
+    input: &[u8],
+    target_y: usize,
+) -> Complex64 {
     let t = poly.num_vars;
 
     // fixed assignments
@@ -662,16 +681,25 @@ pub fn compile_clifford_t(num_qubits: usize, gates: &[Gate]) -> CompiledPhasePol
             }
             Gate::T(q) => {
                 let v = *wire[*q].last().unwrap();
-                rem.push(PhaseTerm { weight: t_phase_unit(), vars: vec![v] });
+                rem.push(PhaseTerm {
+                    weight: t_phase_unit(),
+                    vars: vec![v],
+                });
             }
             Gate::RZ(q, phase) => {
                 let v = *wire[*q].last().unwrap();
                 if *phase != 0 {
-                    rem.push(PhaseTerm { weight: *phase, vars: vec![v] });
+                    rem.push(PhaseTerm {
+                        weight: *phase,
+                        vars: vec![v],
+                    });
                 }
             }
             Gate::MCZ(ctrls) => match ctrls.len() {
-                0 => rem.push(PhaseTerm { weight: phase_pi(), vars: vec![] }),
+                0 => rem.push(PhaseTerm {
+                    weight: phase_pi(),
+                    vars: vec![],
+                }),
                 1 => {
                     let v = *wire[ctrls[0]].last().unwrap();
                     grow(next_var, &mut b4, &mut v4);
@@ -689,7 +717,10 @@ pub fn compile_clifford_t(num_qubits: usize, gates: &[Gate]) -> CompiledPhasePol
                     for &q in ctrls {
                         vars.push(*wire[q].last().unwrap());
                     }
-                    rem.push(PhaseTerm { weight: phase_pi(), vars });
+                    rem.push(PhaseTerm {
+                        weight: phase_pi(),
+                        vars,
+                    });
                 }
             },
         }

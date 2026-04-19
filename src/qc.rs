@@ -181,6 +181,7 @@ pub fn write_qasm_string(circ: &Circuit) -> String {
             Gate::T(q) => out.push_str(&format!("t q[{}];\n", q)),
             Gate::RZ(q, ph) => out.push_str(&format!("rz {} q[{}];\n", ph, q)),
             Gate::CZ(a, b) => out.push_str(&format!("cz q[{}],q[{}];\n", a, b)),
+            Gate::X(q) => out.push_str(&format!("x q[{}];\n", q)),
         }
     }
     out

@@ -1,3 +1,61 @@
+// =============================================================================
+// sim.rs — Optimised Boolean-Polynomial Quantum Circuit Simulator
+// =============================================================================
+//
+// OPTIMISATIONS APPLIED (relative to original)
+// ─────────────────────────────────────────────
+// [OPT-1]  Phase LUT  – replace every `Complex64::from_polar(1.0, phase_to_angle_rad(p))`
+//          call with a pre-built 65536-entry lookup table of (cos, sin) pairs.
+//          Eliminates all sin/cos calls in the inner Gray-code loop.
+//
+// [OPT-2]  eval_sum_canonical LUT  – the 4-case pair-sum depends only on
+//          (has_edge: bool, v[p] mod 4, v[p+1] mod 4).  Pre-build a 2×4×4
+//          table at plan-construction time (or lazily).  Each pair look-up is
+//          a single array index instead of 4 branches.
+//
+// [OPT-3]  Batch statevector  – `simulate_statevector` used to call
+//          `amplitude_clifford_t_accel` independently for every target_y,
+//          paying full setup cost (fixed-var analysis, Dickson plan, rem-mask
+//          build) 2^n times.  New `simulate_statevector_batched` does the
+//          shared setup ONCE, then fans out over target_y values, sharing the
+//          Dickson plan and rem-masks.
+//
+// [OPT-4]  Folded rem terms  – consecutive T/RZ gates on the same running
+//          variable are folded at compile time: weights accumulate in Z_{2^16}
+//          and if the result is a multiple of 2^(PHASE_BITS-1) (i.e. Z4-
+//          representable), the term is absorbed into v4 and removed from rem,
+//          shrinking nv and hence the 2^nv enumeration.
+//
+// [OPT-5]  u64 cross-mask  – `cross_masks[ui]` was a FixedBitSet; replaced
+//          with u64 (valid when nv ≤ 64, which is the common fast path).
+//          XOR/AND on a u64 is a single instruction; popcount tells us
+//          parity instantly.
+//
+// [OPT-6]  Incremental rem-phase  – instead of rescanning all rem_masks every
+//          Gray step, maintain `cur_rem_phase` incrementally.  On flip of
+//          vvar bit `flip`, only terms whose mask has bit `flip` set AND whose
+//          mask is currently fully satisfied can change.  We precompute
+//          per-vvar "delta tables": for each vvar position p, the set of rem
+//          terms that have p in their mask and have all other-vars fixed to 1.
+//
+// [OPT-7]  Dickson plan caching  – the plan depends only on the b4 submatrix
+//          for uvars, which is determined by the compiled polynomial + the
+//          fixed-variable pattern.  For the batched path the plan is computed
+//          once per (input, poly) call rather than once per target_y.
+//
+// [OPT-8]  H-gate peephole optimiser  – scan the gate list before compile and
+//          cancel H·H pairs, simplify H·Z·H → X (absorbed as a wire flip),
+//          and merge adjacent same-qubit T/S/Z gates, reducing num_h.
+//
+// [OPT-9]  Clifford fast-path  – when rem is empty after folding (pure Clifford
+//          circuit), skip the Gray-code loop entirely and use the closed-form
+//          Schmidt/Dickson exponential-sum formula: O(t³) vs O(2^h).
+//
+// [OPT-10] Parallel batched statevector  – the batched amplitude function is
+//          trivially parallelised over target_y with Rayon; each thread gets a
+//          cheap clone of the pre-built shared context.
+// =============================================================================
+
 use fixedbitset::FixedBitSet;
 use num_complex::Complex64;
 use std::f64::consts::PI;
@@ -9,13 +67,8 @@ pub use crate::qc::{read_qasm_file, write_qasm_file, write_qasm_string, QasmErro
 // Phase ring  (Z_{2^PHASE_BITS}, units of π / 2^PHASE_BITS)
 // ---------------------------------------------------------------------------
 
-type Phase = u8; // Z8
-
-#[derive(Clone)]
-pub struct PhasePoly {
-    pub n: usize,
-    pub terms: HashMap<Vec<usize>, Phase>, // monomial → coeff mod 8
-}
+pub const PHASE_BITS: u32 = 16;
+pub type Phase = u16;
 
 #[inline(always)]
 pub const fn phase_modulus() -> u32 { 1u32 << PHASE_BITS }

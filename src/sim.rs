@@ -791,4 +791,33 @@ mod tests {
         approx_eq(a01, c(0.0, 0.0), 1e-10);
         approx_eq(a10, c(0.0, 0.0), 1e-10);
     }
+
+
+#[test]
+fn test_rz_gate() {
+    let mut circuit = Circuit::new(1);
+    // π/8 rotation in units of 2π / 2^PHASE_BITS
+    let phase_val: Phase = (1u32 << (PHASE_BITS - 4)) as Phase; 
+    circuit.h(0);
+    circuit.z(0);
+    circuit.h(0);
+    
+    circuit.rz(0, phase_val);
+   
+    let poly = circuit.compile();
+    let input = vec![0u8];
+    let statevec = simulate_statevector_parallel(&poly, &input);
+
+    // expected sv : [ 0, 0.981+0.195j ]
+    let expected = vec![
+        Complex64::new(0.0, 0.0),
+        Complex64::new(0.981, 0.195),
+    ];
+
+
+
+    assert_statevec_approx_eq(&statevec, &expected, 1e-3);
+}
+
+
 }

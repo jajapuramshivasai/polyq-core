@@ -208,15 +208,15 @@ fn main() {
     // samply record cargo run --release
     // RUSTFLAGS="-C force-frame-pointers=yes" samply record cargo run --release
 
-    benchmark_bv_amplitude(20);
+    // benchmark_bv_amplitude(20);
     // benchmark_bv_statevector(18);
 
     // benchmark_qft_amplitude(18);
     // benchmark_qft_statevector(20);
 
 
-    // simulate_qasm_amplitude("experiments/test/test.qasm");
+    simulate_qasm_amplitude("experiments/test/test.qasm");
     // simulate_qasm_statevector("experiments/test/test.qasm");
-    // simulate_qasm_statevector_parallel("experiments/test/test.qasm");
+    simulate_qasm_statevector_parallel("experiments/test/test.qasm");
    
 }

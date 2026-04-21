@@ -212,11 +212,11 @@ fn main() {
     // benchmark_bv_statevector(18);
 
     // benchmark_qft_amplitude(18);
-    // benchmark_qft_statevector(20);
+    // benchmark_qft_statevector(18);
 
 
     simulate_qasm_amplitude("experiments/test/test.qasm");
-    // simulate_qasm_statevector("experiments/test/test.qasm");
+    simulate_qasm_statevector("experiments/test/test.qasm");
     simulate_qasm_statevector_parallel("experiments/test/test.qasm");
    
 }

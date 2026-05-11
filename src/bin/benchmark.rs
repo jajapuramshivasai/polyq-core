@@ -215,8 +215,28 @@ fn main() {
     // benchmark_qft_statevector(20);
 
 
-    simulate_qasm_amplitude("experiments/test/test.qasm");
+    // simulate_qasm_amplitude("experiments/test/test.qasm");
     // simulate_qasm_statevector("experiments/test/test.qasm");
-    simulate_qasm_statevector_parallel("experiments/test/test.qasm");
-   
+    // simulate_qasm_statevector_parallel("experiments/test/test.qasm");
+
+    simulate_qasm_amplitude("experiments/test/test_q29_h10_t1_s10_z40_cz10.qasm");
+    simulate_qasm_statevector("experiments/test/test_q29_h10_t1_s10_z40_cz10.qasm");
+    simulate_qasm_statevector_parallel("experiments/test/test_q29_h10_t1_s10_z40_cz10.qasm");
+
+
+    simulate_qasm_amplitude("experiments/test/test_q29_h10_t2_s10_z40_cz10.qasm");
+    simulate_qasm_statevector("experiments/test/test_q29_h10_t2_s10_z40_cz10.qasm");
+    simulate_qasm_statevector_parallel("experiments/test/test_q29_h10_t2_s10_z40_cz10.qasm");
+
+
+    simulate_qasm_amplitude("experiments/test/test_q29_h10_t3_s10_z40_cz10.qasm");
+    simulate_qasm_statevector("experiments/test/test_q29_h10_t3_s10_z40_cz10.qasm");
+    simulate_qasm_statevector_parallel("experiments/test/test_q29_h10_t3_s10_z40_cz10.qasm");
+
+    
+    simulate_qasm_amplitude("experiments/test/test_q29_h10_t4_s10_z40_cz10.qasm");
+    simulate_qasm_statevector("experiments/test/test_q29_h10_t4_s10_z40_cz10.qasm");
+    simulate_qasm_statevector_parallel("experiments/test/test_q29_h10_t4_s10_z40_cz10.qasm");
+
+    
 }

@@ -43,8 +43,6 @@ node_modules/
 # Ignore files in src/bin/debug/
 src/bin/debug/
  
-# Ignore experiments directory
-experiments/
 
 # Ignore dataset directory
 dataset/

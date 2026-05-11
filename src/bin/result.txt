@@ -1,0 +1,80 @@
+.venv) shivasai@ZX-4 polyq-core % cargo run --release --bin benchmark 
+   Compiling PolyQ v1.0.0 (/Users/shivasai/Desktop/polyq-core)
+warning: variable does not need to be mutable
+   --> src/sim.rs:613:9
+    |
+613 |     let mut grow = |new_t: usize, b4: &mut Vec<FixedBitSet>, v4: &mut Vec<u8>| {
+    |         ----^^^^
+    |         |
+    |         help: remove this `mut`
+    |
+    = note: `#[warn(unused_mut)]` on by default
+
+warning: function `phase_sub` is never used
+  --> src/sim.rs:41:4
+   |
+41 | fn phase_sub(a: Phase, b: Phase) -> Phase {
+   |    ^^^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` on by default
+
+warning: crate `PolyQ` should have a snake case name
+  |
+  = help: convert the identifier to snake case: `poly_q`
+  = note: `#[warn(non_snake_case)]` on by default
+
+warning: `PolyQ` (lib) generated 3 warnings (run `cargo fix --lib -p PolyQ` to apply 1 suggestion)
+    Finished `release` profile [optimized] target(s) in 4.59s
+     Running `target/release/benchmark`
+
+Simulating amplitude for QASM file: experiments/test/test_q29_h10_t1_s10_z40_cz10.qasm
+Amplitude at index 0 = Complex { re: 0.1767766952966369, im: 0.0 }
+Amplitude simulation time: 4.792µs
+
+Simulating QASM file: experiments/test/test_q29_h10_t1_s10_z40_cz10.qasm
+QASM simulation time: 23.534594417s
+state norm squared = 1.0000000000000002
+
+Simulating QASM file in parallel: experiments/test/test_q29_h10_t1_s10_z40_cz10.qasm
+Rayon num_threads = 8
+Parallel QASM simulation time: 13.695729375s
+state norm squared = 1.0000000000000002
+
+Simulating amplitude for QASM file: experiments/test/test_q29_h10_t2_s10_z40_cz10.qasm
+Amplitude at index 0 = Complex { re: 0.1767766952966369, im: 0.0 }
+Amplitude simulation time: 30µs
+
+Simulating QASM file: experiments/test/test_q29_h10_t2_s10_z40_cz10.qasm
+QASM simulation time: 23.1752425s
+state norm squared = 1.0000000000000002
+
+Simulating QASM file in parallel: experiments/test/test_q29_h10_t2_s10_z40_cz10.qasm
+Rayon num_threads = 8
+Parallel QASM simulation time: 8.191665875s
+state norm squared = 1.0000000000000002
+
+Simulating amplitude for QASM file: experiments/test/test_q29_h10_t3_s10_z40_cz10.qasm
+Amplitude at index 0 = Complex { re: 0.08838834764831845, im: 0.0 }
+Amplitude simulation time: 29.208µs
+
+Simulating QASM file: experiments/test/test_q29_h10_t3_s10_z40_cz10.qasm
+QASM simulation time: 25.064738083s
+state norm squared = 1.0000000000000002
+
+Simulating QASM file in parallel: experiments/test/test_q29_h10_t3_s10_z40_cz10.qasm
+Rayon num_threads = 8
+Parallel QASM simulation time: 9.096594292s
+state norm squared = 1.0000000000000002
+
+Simulating amplitude for QASM file: experiments/test/test_q29_h10_t4_s10_z40_cz10.qasm
+Amplitude at index 0 = Complex { re: 0.04419417382415922, im: 0.0 }
+Amplitude simulation time: 22.5µs
+
+Simulating QASM file: experiments/test/test_q29_h10_t4_s10_z40_cz10.qasm
+QASM simulation time: 23.012990709s
+state norm squared = 1.0000000000000002
+
+Simulating QASM file in parallel: experiments/test/test_q29_h10_t4_s10_z40_cz10.qasm
+Rayon num_threads = 8
+Parallel QASM simulation time: 8.080117584s
+state norm squared = 1.0000000000000002

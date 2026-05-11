@@ -1,14 +1,14 @@
 {
-  "simulation_time_seconds": 54.11148405075073,
+  "simulation_time_seconds": 32.75658893585205,
   "system_info": {
     "platform": "Darwin 25.4.0",
     "architecture": "arm64",
     "processor": "arm",
     "cpu_count": 8,
     "total_ram_gb": 8.0,
-    "available_ram_gb": 1.27,
+    "available_ram_gb": 1.78,
     "cpu_brand": "N/A",
     "cpu_hz": "N/A"
   },
-  "date_time": "2026-04-20T04:33:27.720730"
+  "date_time": "2026-05-11T15:31:30.992908"
 }
